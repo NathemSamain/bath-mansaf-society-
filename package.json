@@ -1,0 +1,16 @@
+{
+  "name": "stock-prediction-db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "PostgreSQL/Supabase schema + query layer for an AI stock prediction and alert system",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.0",
+    "dotenv": "^16.4.5"
+  }
+}
