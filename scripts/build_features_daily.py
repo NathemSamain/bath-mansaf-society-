@@ -20,6 +20,7 @@ from typing import Optional
 from datetime import date
 
 import numpy as np
+from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # Configure logging
@@ -42,6 +43,7 @@ def get_env_var(name: str) -> str:
 
 def init_supabase() -> Client:
     """Initialize Supabase client with service role key."""
+    load_dotenv()  # Load credentials from .env file
     url = get_env_var("SUPABASE_URL")
     key = get_env_var("SUPABASE_SERVICE_ROLE_KEY")
     client = create_client(url, key)
