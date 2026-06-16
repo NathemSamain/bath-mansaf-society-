@@ -387,6 +387,21 @@ WARNING: <model> may be copying yesterday's direction rather than learning
 useful predictive structure.
 ```
 
+### Class-collapse diagnostic
+
+The most common Stage-1 failure is a model that quietly predicts **one class for
+everything** (e.g. "always UP"), riding the slight class imbalance to a
+deceptively high F1 while its MCC sits at ~0. For each model the script logs its
+predicted class balance and, if it predicts a single class more than 90% of the
+time, warns:
+
+```
+WARNING: <model> collapsed to the majority class (predicts UP 100% of the
+time) - it is likely riding class imbalance, not learning. Trust MCC over F1 here.
+```
+
+The dominant-class share is recorded in metadata under `class_collapse_diagnostic`.
+
 ### Probability calibration
 
 Downstream alerting needs trustworthy *probabilities*, not just labels. Raw

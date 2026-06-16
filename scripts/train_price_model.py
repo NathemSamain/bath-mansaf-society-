@@ -27,7 +27,7 @@ import os
 import sys
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -96,6 +96,10 @@ RANDOM_SEED = 42
 # time, we flag it as a likely lag-mimic (Radfar's false-positive trap).
 PERSISTENCE_ACC_CLOSE = 0.02      # within 2 percentage points
 LAG_MIMIC_AGREEMENT_WARN = 0.90   # agrees with prev day > 90% of the time
+
+# If a model predicts the same class for more than this fraction of rows it has
+# effectively collapsed to the majority class and learned nothing useful.
+CLASS_COLLAPSE_WARN = 0.90
 
 # Calibration method. Sigmoid (Platt) is monotonic and robust on small
 # validation sets, so it mainly fixes probabilities without thrashing labels.
@@ -374,6 +378,38 @@ def check_lag_warning(
         )
 
 
+def check_class_collapse(name: str, y_pred: np.ndarray) -> dict:
+    """
+    Detect a model that predicts (almost) one class for everything. This is the
+    degenerate "always UP/DOWN" failure: it can post a deceptively high F1 by
+    riding the class imbalance while having no real predictive skill (MCC ~ 0).
+    Returns the dominant-class share so it can be recorded in metadata.
+    """
+    y_pred = np.asarray(y_pred, dtype=int)
+    n = len(y_pred)
+    up_share = float(np.mean(y_pred == 1)) if n else 0.0
+    dominant_class = 1 if up_share >= 0.5 else 0
+    dominant_share = max(up_share, 1 - up_share)
+
+    logger.info(
+        f"  Predicted class balance: UP={up_share * 100:.0f}% / "
+        f"DOWN={(1 - up_share) * 100:.0f}%"
+    )
+    if dominant_share > CLASS_COLLAPSE_WARN:
+        label = "UP" if dominant_class == 1 else "DOWN"
+        logger.warning(
+            f"WARNING: {name} collapsed to the majority class "
+            f"(predicts {label} {dominant_share * 100:.0f}% of the time) - it is "
+            f"likely riding class imbalance, not learning. Trust MCC over F1 here."
+        )
+
+    return {
+        "dominant_class": dominant_class,
+        "dominant_class_share": round(dominant_share, 4),
+        "collapsed": bool(dominant_share > CLASS_COLLAPSE_WARN),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Naive baselines
 # ---------------------------------------------------------------------------
@@ -621,11 +657,13 @@ def train_model():
             "Logistic Regression", lr_val_metrics["accuracy"],
             persistence_val_acc, lr_lag,
         )
+        lr_collapse = check_class_collapse("Logistic Regression", lr_val_pred)
         models["Logistic Regression"] = {
             "estimator": lr_model,
             "calibrated": lr_calibrated,
             "val_metrics": lr_val_metrics,
             "lag": lr_lag,
+            "collapse": lr_collapse,
         }
     except Exception as e:
         logger.error(f"Logistic Regression training failed: {e}")
@@ -643,11 +681,13 @@ def train_model():
             "Random Forest", rf_val_metrics["accuracy"],
             persistence_val_acc, rf_lag,
         )
+        rf_collapse = check_class_collapse("Random Forest", rf_val_pred)
         models["Random Forest"] = {
             "estimator": rf_model,
             "calibrated": rf_calibrated,
             "val_metrics": rf_val_metrics,
             "lag": rf_lag,
+            "collapse": rf_collapse,
         }
     except Exception as e:
         logger.error(f"Random Forest training failed: {e}")
@@ -698,6 +738,7 @@ def train_model():
     check_lag_warning(
         best_name, test_metrics["accuracy"], persistence_test_acc, best_test_lag
     )
+    best_test_collapse = check_class_collapse(best_name, test_pred)
 
     # ------------------------------------------------------------------
     # Comparison table
@@ -739,6 +780,14 @@ def train_model():
         key = name.lower().replace(" ", "_") + "_validation_agreement"
         lag_mimic_diagnostic[key] = info["lag"]
 
+    class_collapse_diagnostic = {
+        "warning_threshold": CLASS_COLLAPSE_WARN,
+        "best_model_test": best_test_collapse,
+    }
+    for name, info in models.items():
+        key = name.lower().replace(" ", "_") + "_validation"
+        class_collapse_diagnostic[key] = info["collapse"]
+
     metadata = {
         "model_name": best_name,
         "feature_columns": FEATURE_COLUMNS,
@@ -755,8 +804,9 @@ def train_model():
         "test_metrics": test_metrics,
         "baseline_metrics": baseline_metrics,
         "lag_mimic_diagnostic": lag_mimic_diagnostic,
+        "class_collapse_diagnostic": class_collapse_diagnostic,
         "calibrated": best_calibrated,
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
     save_model(best_model, metadata)
