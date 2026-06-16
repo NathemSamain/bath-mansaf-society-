@@ -114,6 +114,26 @@ GROUP BY source;
 
 ---
 
+## Price Ingestion (yfinance — real data, no API key)
+
+`scripts/ingest_prices_yfinance.py` is a free alternative to the Alpha Vantage
+script. It pulls **real** daily OHLCV from Yahoo Finance for every active ticker
+in `stocks` and **replaces** any existing rows for those tickers (e.g. the
+synthetic `generated` seed data) with real prices tagged `source = 'yfinance'`.
+The `prices_daily` schema is unchanged.
+
+```bash
+pip install -r requirements.txt          # installs yfinance
+python scripts/ingest_prices_yfinance.py
+```
+
+It needs only `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (no API key, no
+daily request cap). History defaults to 5 years; override with `YF_PERIOD`
+(e.g. `max`) or `YF_START_DATE` (e.g. `2015-01-01`). After ingesting, rerun
+`build_features_daily.py` then `train_price_model.py`.
+
+---
+
 ## Feature Engineering Pipeline
 
 ### Overview
