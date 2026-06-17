@@ -14,6 +14,9 @@ price-only baseline:
   5. Probability calibration via CalibratedClassifierCV.
   6. A single comparison table across models + baselines.
   7. Model selection by validation MCC (F1 as tie-breaker).
+  8. Scale-free price features (MA/MACD ratios instead of dollar levels).
+  9. Date-based train/val/test split (keeps all tickers of a day together).
+ 10. Market-wide context features (SPY/QQQ/VIX), joined by date when available.
 
 Usage:
     python scripts/train_price_model.py
@@ -57,8 +60,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Feature columns for model training
-FEATURE_COLUMNS = [
+# Raw feature columns fetched from features_daily.
+RAW_FETCH_COLUMNS = [
     "return_1d",
     "return_5d",
     "return_20d",
@@ -71,6 +74,43 @@ FEATURE_COLUMNS = [
     "macd",
     "macd_signal",
 ]
+
+# Already scale-free, used directly.
+SCALE_FREE_FEATURES = [
+    "return_1d",
+    "return_5d",
+    "return_20d",
+    "volatility_5d",
+    "volatility_20d",
+    "volume_change_1d",
+    "rsi_14",
+]
+
+# Price-scale features (moving averages, MACD) are in dollars and not
+# comparable across a $20 and a $500 stock. We replace them with scale-free
+# ratios so the model learns shape, not price level (suggestion #1).
+DERIVED_FEATURES = [
+    "ma_5_vs_20",       # moving_average_5d / moving_average_20d - 1
+    "macd_norm",        # macd / moving_average_20d
+    "macd_signal_norm", # macd_signal / moving_average_20d
+    "macd_hist_norm",   # (macd - macd_signal) / moving_average_20d
+]
+
+# Market-wide context (suggestion #6), fetched from Yahoo Finance and joined by
+# date. All values are as-of the same day as the stock's own features (no
+# lookahead). If the fetch fails, training proceeds with price-only features.
+MARKET_FEATURES = [
+    "mkt_spy_ret_1d",
+    "mkt_spy_ret_5d",
+    "mkt_qqq_ret_1d",
+    "mkt_vix",
+    "mkt_vix_chg_1d",
+]
+MARKET_TICKERS = {"SPY": "SPY", "QQQ": "QQQ", "VIX": "^VIX"}
+
+# Active feature set used for training. Set at runtime in train_model() once we
+# know whether market features are available.
+FEATURE_COLUMNS = SCALE_FREE_FEATURES + DERIVED_FEATURES
 
 # Continuous next-day return (stored in PERCENT, e.g. 1.25 == +1.25%).
 # We build the training label from this column instead of trusting the
@@ -178,7 +218,7 @@ def fetch_features(supabase: Client) -> pd.DataFrame:
             df["ticker"] = df["stock_id"].map(stock_map)
 
         # Ensure numeric types (Supabase numeric columns can arrive as strings)
-        numeric_cols = FEATURE_COLUMNS + [RETURN_COLUMN]
+        numeric_cols = RAW_FETCH_COLUMNS + [RETURN_COLUMN]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -190,9 +230,94 @@ def fetch_features(supabase: Client) -> pd.DataFrame:
         sys.exit(1)
 
 
+def derive_normalized_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace price-scale features (moving averages, MACD) with scale-free ratios
+    so they are comparable across stocks at different price levels.
+
+    A $20 and a $500 stock have wildly different absolute MAs/MACD; the ratios
+    below capture the same trend/momentum shape independent of price level.
+    """
+    df = df.copy()
+
+    ma20 = df["moving_average_20d"].astype(float)
+    # Guard against divide-by-zero; non-positive MAs become NaN and are dropped
+    # later in cleaning (real equity MAs are always positive).
+    ma20 = ma20.where(ma20 > 0, np.nan)
+
+    df["ma_5_vs_20"] = df["moving_average_5d"] / ma20 - 1.0
+    df["macd_norm"] = df["macd"] / ma20
+    df["macd_signal_norm"] = df["macd_signal"] / ma20
+    df["macd_hist_norm"] = (df["macd"] - df["macd_signal"]) / ma20
+
+    logger.info(f"Derived {len(DERIVED_FEATURES)} scale-free price features")
+    return df
+
+
+def fetch_market_features(min_date: str, max_date: str) -> pd.DataFrame | None:
+    """
+    Fetch market-wide context (SPY, QQQ, VIX) from Yahoo Finance and build
+    per-date features aligned to the stock features (same-day, no lookahead).
+
+    Returns a DataFrame with a 'date' column (YYYY-MM-DD) plus MARKET_FEATURES,
+    or None if yfinance/network is unavailable (training then proceeds
+    price-only).
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("yfinance not installed; skipping market features.")
+        return None
+
+    try:
+        # Pad the start so 5-day returns are defined at the earliest stock date.
+        start = (pd.to_datetime(min_date) - pd.Timedelta(days=12)).strftime("%Y-%m-%d")
+        end = (pd.to_datetime(max_date) + pd.Timedelta(days=2)).strftime("%Y-%m-%d")
+
+        def close_series(ticker: str) -> pd.Series | None:
+            raw = yf.download(
+                ticker, start=start, end=end, interval="1d",
+                auto_adjust=False, actions=False, progress=False, threads=False,
+            )
+            if raw is None or raw.empty:
+                return None
+            if isinstance(raw.columns, pd.MultiIndex):
+                raw.columns = raw.columns.get_level_values(0)
+            col = "Adj Close" if "Adj Close" in raw.columns else "Close"
+            return raw[col].astype(float)
+
+        spy = close_series(MARKET_TICKERS["SPY"])
+        qqq = close_series(MARKET_TICKERS["QQQ"])
+        vix = close_series(MARKET_TICKERS["VIX"])
+
+        if spy is None or qqq is None or vix is None:
+            logger.warning("Market data download empty; skipping market features.")
+            return None
+
+        market = pd.DataFrame(index=spy.index)
+        market["mkt_spy_ret_1d"] = spy.pct_change(1) * 100
+        market["mkt_spy_ret_5d"] = spy.pct_change(5) * 100
+        market["mkt_qqq_ret_1d"] = qqq.pct_change(1) * 100
+        market["mkt_vix"] = vix
+        market["mkt_vix_chg_1d"] = vix.pct_change(1) * 100
+
+        market = market.reset_index()
+        market["date"] = pd.to_datetime(market.iloc[:, 0]).dt.strftime("%Y-%m-%d")
+        market = market[["date"] + MARKET_FEATURES]
+
+        logger.info(
+            f"Fetched market features (SPY/QQQ/VIX) for {len(market)} trading days"
+        )
+        return market
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch market features ({e}); proceeding price-only.")
+        return None
+
+
 def validate_columns(df: pd.DataFrame) -> None:
-    """Check that all required columns exist."""
-    required = FEATURE_COLUMNS + [RETURN_COLUMN, "date", "stock_id", "ticker"]
+    """Check that all required raw columns exist."""
+    required = RAW_FETCH_COLUMNS + [RETURN_COLUMN, "date", "stock_id", "ticker"]
     missing = [col for col in required if col not in df.columns]
 
     if missing:
@@ -294,23 +419,41 @@ def add_previous_direction(df: pd.DataFrame) -> pd.DataFrame:
 
 def split_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Time-based split: oldest 70% train, next 15% val, newest 15% test.
-    Sorted by date so the test set is strictly the most recent data.
+    Time-based split on UNIQUE DATES (not raw rows): oldest 70% of trading days
+    -> train, next 15% -> validation, newest 15% -> test.
+
+    Splitting by date keeps every ticker from the same day in the same split,
+    which is the correct grouping for pooled cross-sectional data and avoids
+    cutting a single day across the train/test boundary (suggestion #4).
     """
     df = df.sort_values(["date", "ticker"]).reset_index(drop=True)
 
-    n = len(df)
-    train_end = int(n * TRAIN_RATIO)
-    val_end = int(n * (TRAIN_RATIO + VAL_RATIO))
+    unique_dates = np.sort(df["date"].unique())
+    n_dates = len(unique_dates)
+    train_end = int(n_dates * TRAIN_RATIO)
+    val_end = int(n_dates * (TRAIN_RATIO + VAL_RATIO))
 
-    train_df = df.iloc[:train_end]
-    val_df = df.iloc[train_end:val_end]
-    test_df = df.iloc[val_end:]
+    train_dates = set(unique_dates[:train_end])
+    val_dates = set(unique_dates[train_end:val_end])
+    test_dates = set(unique_dates[val_end:])
 
-    logger.info("Time-based split:")
-    logger.info(f"  Training:   {len(train_df)} rows ({TRAIN_RATIO * 100:.0f}%)")
-    logger.info(f"  Validation: {len(val_df)} rows ({VAL_RATIO * 100:.0f}%)")
-    logger.info(f"  Test:       {len(test_df)} rows ({TEST_RATIO * 100:.0f}%)")
+    train_df = df[df["date"].isin(train_dates)]
+    val_df = df[df["date"].isin(val_dates)]
+    test_df = df[df["date"].isin(test_dates)]
+
+    logger.info("Time-based split (by unique date):")
+    logger.info(
+        f"  Training:   {len(train_df):>6} rows / {len(train_dates):>4} days "
+        f"({TRAIN_RATIO * 100:.0f}%)"
+    )
+    logger.info(
+        f"  Validation: {len(val_df):>6} rows / {len(val_dates):>4} days "
+        f"({VAL_RATIO * 100:.0f}%)"
+    )
+    logger.info(
+        f"  Test:       {len(test_df):>6} rows / {len(test_dates):>4} days "
+        f"({TEST_RATIO * 100:.0f}%)"
+    )
 
     if len(train_df) < 100:
         logger.warning(
@@ -318,7 +461,11 @@ def split_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFra
             f"Model may not generalize well."
         )
 
-    return train_df, val_df, test_df
+    return (
+        train_df.reset_index(drop=True),
+        val_df.reset_index(drop=True),
+        test_df.reset_index(drop=True),
+    )
 
 
 def prepare_matrices(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -571,8 +718,27 @@ def train_model():
     df = fetch_features(supabase)
     rows_loaded = len(df)
 
-    # Validate columns
+    # Validate raw columns
     validate_columns(df)
+
+    # Normalize price-scale features into scale-free ratios (suggestion #1)
+    df = derive_normalized_features(df)
+
+    # Add market-wide context joined by date (suggestion #6). Degrades
+    # gracefully to price-only if the market data can't be fetched.
+    global FEATURE_COLUMNS
+    active_features = list(SCALE_FREE_FEATURES + DERIVED_FEATURES)
+    market_df = fetch_market_features(df["date"].min(), df["date"].max())
+    market_features_used = False
+    if market_df is not None:
+        df = df.merge(market_df, on="date", how="left")
+        active_features += MARKET_FEATURES
+        market_features_used = True
+        logger.info(f"Added {len(MARKET_FEATURES)} market-wide features")
+    else:
+        logger.warning("Proceeding with price-only features (no market context)")
+    FEATURE_COLUMNS = active_features
+    logger.info(f"Active feature set: {len(FEATURE_COLUMNS)} columns")
 
     # Clean (drop missing features / returns)
     df_clean = clean_data(df)
@@ -800,6 +966,7 @@ def train_model():
         "training_rows": len(train_df),
         "validation_rows": len(val_df),
         "test_rows": len(test_df),
+        "market_features_used": market_features_used,
         "validation_metrics": best_val_metrics,
         "test_metrics": test_metrics,
         "baseline_metrics": baseline_metrics,

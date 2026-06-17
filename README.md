@@ -224,13 +224,17 @@ and saves the best one for making predictions.
 - Logistic Regression
 - Random Forest Classifier
 
-**Features used (11 total):**
-- `return_1d`, `return_5d`, `return_20d` - Price momentum
-- `volatility_5d`, `volatility_20d` - Volatility measures
-- `volume_change_1d` - Volume dynamics
-- `moving_average_5d`, `moving_average_20d` - Trend indicators
-- `rsi_14` - Overbought/oversold oscillator
-- `macd`, `macd_signal` - MACD indicator
+**Features used:**
+- Scale-free price/momentum: `return_1d`, `return_5d`, `return_20d`,
+  `volatility_5d`, `volatility_20d`, `volume_change_1d`, `rsi_14`
+- Normalized trend/MACD ratios (derived, so a $20 and a $500 stock are
+  comparable): `ma_5_vs_20`, `macd_norm`, `macd_signal_norm`, `macd_hist_norm`
+- Market-wide context (fetched from Yahoo Finance, joined by date, same-day /
+  no lookahead; skipped automatically if unavailable): `mkt_spy_ret_1d`,
+  `mkt_spy_ret_5d`, `mkt_qqq_ret_1d`, `mkt_vix`, `mkt_vix_chg_1d`
+
+> Raw dollar-level moving averages and MACD are intentionally **not** fed to the
+> model — they're replaced by the ratios above so it learns shape, not price tier.
 
 **Target (label thresholding):**
 - The label is built from `target_next_day_return` (stored in percent), **not** from
@@ -241,10 +245,12 @@ and saves the best one for making predictions.
 - This follows the StockNet convention: near-flat days carry little signal and
   mostly add label noise, so they are excluded from training and evaluation.
 
-**Time-based split:**
-- 70% training (oldest data)
-- 15% validation
-- 15% testing (newest data)
+**Time-based split (by unique date):**
+- 70% oldest trading days → training
+- 15% → validation
+- 15% newest trading days → testing
+- Splitting on dates (not raw rows) keeps every ticker from the same day in the
+  same split — the correct grouping for pooled multi-ticker data.
 
 **Trustworthy-evaluation upgrades:** see
 [Trustworthy Evaluation](#trustworthy-evaluation) below for the full rationale.
