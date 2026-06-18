@@ -8,7 +8,7 @@ This version adds trustworthy-evaluation upgrades on top of the original
 price-only baseline:
   1. StockNet-style label thresholding using `target_next_day_return`
      (drop near-flat "noise" days so the model learns real moves).
-  2. Matthews Correlation Coefficient (MCC) alongside Acc/Prec/Rec/F1.
+  2. Matthews Correlation Coefficient (MCC) + ROC-AUC alongside Acc/Prec/Rec/F1.
   3. Naive baselines: Always-UP, Persistence, Random (class-balanced).
   4. Lag-mimic diagnostic (does the model just copy yesterday's direction?).
   5. Probability calibration via CalibratedClassifierCV.
@@ -49,6 +49,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     matthews_corrcoef,
+    roc_auc_score,
     confusion_matrix,
 )
 
@@ -476,14 +477,41 @@ def prepare_matrices(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    """Compute the full metric set, including MCC."""
+    """Compute the full metric set, including MCC. (AUC added separately.)"""
     return {
         "accuracy": round(accuracy_score(y_true, y_pred), 4),
         "precision": round(precision_score(y_true, y_pred, zero_division=0), 4),
         "recall": round(recall_score(y_true, y_pred, zero_division=0), 4),
         "f1": round(f1_score(y_true, y_pred, zero_division=0), 4),
         "mcc": round(matthews_corrcoef(y_true, y_pred), 4),
+        "auc": None,
     }
+
+
+def positive_scores(model, X: np.ndarray):
+    """Probability of the UP class, for ROC-AUC (falls back to decision_function)."""
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)[:, 1]
+    if hasattr(model, "decision_function"):
+        return model.decision_function(X)
+    return None
+
+
+def compute_auc(y_true: np.ndarray, scores) -> float | None:
+    """
+    ROC-AUC from probability/ranking scores. Measures whether the model's
+    *ranking* of UP-likelihood has signal, independent of the 0.5 threshold.
+    AUC ~ 0.50 means no ranking signal (so no threshold tuning can help).
+    Returns None for label-only predictors (baselines) or when undefined.
+    """
+    if scores is None:
+        return None
+    try:
+        if len(np.unique(y_true)) < 2:
+            return None
+        return round(float(roc_auc_score(y_true, scores)), 4)
+    except Exception:
+        return None
 
 
 def log_metrics(name: str, split: str, m: dict) -> None:
@@ -494,6 +522,8 @@ def log_metrics(name: str, split: str, m: dict) -> None:
     logger.info(f"  Recall:    {m['recall']:.4f}")
     logger.info(f"  F1 Score:  {m['f1']:.4f}")
     logger.info(f"  MCC:       {m['mcc']:.4f}")
+    if m.get("auc") is not None:
+        logger.info(f"  ROC-AUC:   {m['auc']:.4f}")
 
 
 def lag_mimic_agreement(y_pred: np.ndarray, prev_direction: np.ndarray) -> float:
@@ -665,7 +695,7 @@ def print_comparison_table(rows: list[dict]) -> None:
     """
     header = (
         f"{'Model':<22} | {'Split':<11} | {'Accuracy':>8} | "
-        f"{'Precision':>9} | {'Recall':>7} | {'F1':>6} | {'MCC':>7}"
+        f"{'Precision':>9} | {'Recall':>7} | {'F1':>6} | {'MCC':>7} | {'AUC':>7}"
     )
     sep = "-" * len(header)
 
@@ -676,10 +706,12 @@ def print_comparison_table(rows: list[dict]) -> None:
     logger.info(sep)
     for r in rows:
         m = r["metrics"]
+        auc = m.get("auc")
+        auc_str = f"{auc:.4f}" if auc is not None else "n/a"
         logger.info(
             f"{r['model']:<22} | {r['split']:<11} | "
             f"{m['accuracy']:>8.4f} | {m['precision']:>9.4f} | "
-            f"{m['recall']:>7.4f} | {m['f1']:>6.4f} | {m['mcc']:>7.4f}"
+            f"{m['recall']:>7.4f} | {m['f1']:>6.4f} | {m['mcc']:>7.4f} | {auc_str:>7}"
         )
     logger.info("=" * len(header))
 
@@ -817,6 +849,7 @@ def train_model():
         lr_model, lr_calibrated = calibrate_model(lr_raw, X_val, y_val)
         lr_val_pred = lr_model.predict(X_val)
         lr_val_metrics = compute_metrics(y_val, lr_val_pred)
+        lr_val_metrics["auc"] = compute_auc(y_val, positive_scores(lr_model, X_val))
         log_metrics("Logistic Regression", "Validation", lr_val_metrics)
         lr_lag = lag_mimic_agreement(lr_val_pred, val_prev)
         check_lag_warning(
@@ -841,6 +874,7 @@ def train_model():
         rf_model, rf_calibrated = calibrate_model(rf_raw, X_val, y_val)
         rf_val_pred = rf_model.predict(X_val)
         rf_val_metrics = compute_metrics(y_val, rf_val_pred)
+        rf_val_metrics["auc"] = compute_auc(y_val, positive_scores(rf_model, X_val))
         log_metrics("Random Forest", "Validation", rf_val_metrics)
         rf_lag = lag_mimic_agreement(rf_val_pred, val_prev)
         check_lag_warning(
@@ -897,6 +931,7 @@ def train_model():
 
     test_pred = best_model.predict(X_test)
     test_metrics = compute_metrics(y_test, test_pred)
+    test_metrics["auc"] = compute_auc(y_test, positive_scores(best_model, X_test))
     log_metrics(best_name, "Test", test_metrics)
     logger.info(f"  Confusion Matrix:\n{confusion_matrix(y_test, test_pred)}")
 
@@ -927,6 +962,14 @@ def train_model():
             "model": "Random Forest", "split": "Validation",
             "metrics": models["Random Forest"]["val_metrics"],
         })
+    # Test split: naive baselines + the selected best model, so we can see
+    # directly whether the model beats the baselines out of sample.
+    table_rows.append({"model": "Always-UP", "split": "Test",
+                       "metrics": baseline_metrics["test"]["Always-UP"]})
+    table_rows.append({"model": "Persistence", "split": "Test",
+                       "metrics": baseline_metrics["test"]["Persistence"]})
+    table_rows.append({"model": "Random", "split": "Test",
+                       "metrics": baseline_metrics["test"]["Random"]})
     table_rows.append({
         "model": f"Best ({best_name})", "split": "Test",
         "metrics": test_metrics,
@@ -972,6 +1015,11 @@ def train_model():
         "baseline_metrics": baseline_metrics,
         "lag_mimic_diagnostic": lag_mimic_diagnostic,
         "class_collapse_diagnostic": class_collapse_diagnostic,
+        "roc_auc": {
+            "best_validation": best_val_metrics.get("auc"),
+            "best_test": test_metrics.get("auc"),
+            "note": "AUC ~ 0.50 means no ranking signal (threshold tuning cannot help)",
+        },
         "calibrated": best_calibrated,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
