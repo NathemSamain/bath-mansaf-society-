@@ -114,6 +114,39 @@ GROUP BY source;
 
 ---
 
+## Stage 2 — News & Sentiment
+
+Adds news-based sentiment features on top of the price-only baseline. Two
+scripts, run after `build_features_daily.py`:
+
+```bash
+python scripts/ingest_news.py              # Alpha Vantage -> news_articles + news_sentiment
+python scripts/build_sentiment_features.py # aggregate -> features_daily sentiment columns
+```
+
+**`ingest_news.py`** pulls news per active ticker from the Alpha Vantage
+`NEWS_SENTIMENT` endpoint into `news_articles`, and AV's per-ticker sentiment
+score into `news_sentiment` (`model_name='AlphaVantage'`). It is resumable
+(continues from the newest stored article, de-dupes by URL) and free-tier aware
+(stops cleanly at the ~25 requests/day cap — just re-run on subsequent days to
+backfill more history). Requires `ALPHA_VANTAGE_API_KEY` in `.env`.
+
+**`build_sentiment_features.py`** aggregates stored sentiment into the
+`features_daily` columns (`news_count`, `avg_sentiment_score`) using a
+**leakage-safe, StockNet-style alignment**: an article is attached to the first
+trading day whose close (~16:00 ET) falls on/after the article's timestamp, so a
+feature row for day D only ever sees news a trader could have known before the
+D → D+1 prediction.
+
+> Roadmap: the schema supports multiple sentiment rows per article, so a later
+> pass can add a **Finnhub** news provider and recompute sentiment with
+> **FinBERT** (`model_name='FinBERT'`) without disturbing the AV rows. After
+> ingesting news, the sentiment columns are added to the model's feature set and
+> `train_price_model.py` is rerun to test whether MCC finally clears the
+> baselines out of sample.
+
+---
+
 ## Price Ingestion (yfinance — real data, no API key)
 
 `scripts/ingest_prices_yfinance.py` is a free alternative to the Alpha Vantage
