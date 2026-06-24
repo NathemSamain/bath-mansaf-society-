@@ -20,6 +20,7 @@ from typing import Optional
 from datetime import date
 
 import numpy as np
+from dotenv import load_dotenv
 from supabase import create_client, Client
 
 # Configure logging
@@ -42,6 +43,7 @@ def get_env_var(name: str) -> str:
 
 def init_supabase() -> Client:
     """Initialize Supabase client with service role key."""
+    load_dotenv()  # Load credentials from .env file
     url = get_env_var("SUPABASE_URL")
     key = get_env_var("SUPABASE_SERVICE_ROLE_KEY")
     client = create_client(url, key)
@@ -67,21 +69,41 @@ def fetch_prices_for_stock(supabase: Client, stock_id: str, ticker: str) -> list
     """
     Fetch all historical prices for a stock, ordered by date ascending.
     Returns list of dicts with date, close, volume fields.
+
+    Uses pagination because Supabase caps a single request at 1000 rows; without
+    it, tickers with more history would be silently truncated to the oldest 1000
+    days (dropping the most recent data from feature generation).
     """
     try:
-        response = (
-            supabase.table("prices_daily")
-            .select("date, close, volume")
-            .eq("stock_id", stock_id)
-            .order("date", desc=False)
-            .execute()
-        )
+        all_rows = []
+        batch_size = 1000
+        offset = 0
 
-        if not response.data:
+        while True:
+            response = (
+                supabase.table("prices_daily")
+                .select("date, close, volume")
+                .eq("stock_id", stock_id)
+                .order("date", desc=False)
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+
+            if not response.data:
+                break
+
+            all_rows.extend(response.data)
+
+            if len(response.data) < batch_size:
+                break
+
+            offset += batch_size
+
+        if not all_rows:
             logger.warning(f"No price data found for {ticker}")
             return []
 
-        return response.data
+        return all_rows
 
     except Exception as e:
         logger.error(f"Failed to fetch prices for {ticker}: {e}")

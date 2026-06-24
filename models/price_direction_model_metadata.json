@@ -1,0 +1,138 @@
+{
+  "model_name": "Random Forest",
+  "feature_columns": [
+    "return_1d",
+    "return_5d",
+    "return_20d",
+    "volatility_5d",
+    "volatility_20d",
+    "volume_change_1d",
+    "rsi_14",
+    "ma_5_vs_20",
+    "macd_norm",
+    "macd_signal_norm",
+    "macd_hist_norm",
+    "mkt_spy_ret_1d",
+    "mkt_spy_ret_5d",
+    "mkt_qqq_ret_1d",
+    "mkt_vix",
+    "mkt_vix_chg_1d"
+  ],
+  "label_threshold_up": 0.5,
+  "label_threshold_down": -0.5,
+  "rows_loaded": 37230,
+  "rows_after_cleaning": 36630,
+  "rows_after_thresholding": 27791,
+  "class_balance": {
+    "up": 14458,
+    "down": 13333,
+    "up_ratio": 0.5202
+  },
+  "training_rows": 19412,
+  "validation_rows": 4125,
+  "test_rows": 4254,
+  "market_features_used": true,
+  "validation_metrics": {
+    "accuracy": 0.5394,
+    "precision": 0.5423,
+    "recall": 0.8783,
+    "f1": 0.6706,
+    "mcc": 0.0432,
+    "auc": 0.536
+  },
+  "test_metrics": {
+    "accuracy": 0.4929,
+    "precision": 0.5011,
+    "recall": 0.8628,
+    "f1": 0.634,
+    "mcc": -0.0419,
+    "auc": 0.4928
+  },
+  "baseline_metrics": {
+    "validation": {
+      "Always-UP": {
+        "accuracy": 0.5338,
+        "precision": 0.5338,
+        "recall": 1.0,
+        "f1": 0.6961,
+        "mcc": 0.0,
+        "auc": null
+      },
+      "Persistence": {
+        "accuracy": 0.4945,
+        "precision": 0.5265,
+        "recall": 0.5282,
+        "f1": 0.5273,
+        "mcc": -0.0158,
+        "auc": null
+      },
+      "Random": {
+        "accuracy": 0.4926,
+        "precision": 0.5256,
+        "recall": 0.5073,
+        "f1": 0.5163,
+        "mcc": -0.0169,
+        "auc": null
+      }
+    },
+    "test": {
+      "Always-UP": {
+        "accuracy": 0.5089,
+        "precision": 0.5089,
+        "recall": 1.0,
+        "f1": 0.6746,
+        "mcc": 0.0,
+        "auc": null
+      },
+      "Persistence": {
+        "accuracy": 0.4979,
+        "precision": 0.5067,
+        "recall": 0.5067,
+        "f1": 0.5067,
+        "mcc": -0.0046,
+        "auc": null
+      },
+      "Random": {
+        "accuracy": 0.5019,
+        "precision": 0.5106,
+        "recall": 0.5127,
+        "f1": 0.5116,
+        "mcc": 0.0034,
+        "auc": null
+      }
+    }
+  },
+  "lag_mimic_diagnostic": {
+    "warning_threshold_agreement": 0.9,
+    "persistence_closeness_threshold": 0.02,
+    "best_model_test_agreement": 0.5343,
+    "persistence_test_accuracy": 0.4979,
+    "logistic_regression_validation_agreement": 0.5355,
+    "random_forest_validation_agreement": 0.5411
+  },
+  "class_collapse_diagnostic": {
+    "warning_threshold": 0.9,
+    "best_model_test": {
+      "dominant_class": 1,
+      "dominant_class_share": 0.8764,
+      "collapsed": false
+    },
+    "logistic_regression_validation": {
+      "dominant_class": 1,
+      "dominant_class_share": 1.0,
+      "collapsed": true
+    },
+    "random_forest_validation": {
+      "dominant_class": 1,
+      "dominant_class_share": 0.8645,
+      "collapsed": false
+    }
+  },
+  "roc_auc": {
+    "best_validation": 0.536,
+    "best_test": 0.4928,
+    "note": "AUC ~ 0.50 means no ranking signal (threshold tuning cannot help)"
+  },
+  "calibrated": true,
+  "created_at": "2026-06-18T00:05:17Z"
+}
