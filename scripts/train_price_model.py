@@ -109,6 +109,11 @@ MARKET_FEATURES = [
 ]
 MARKET_TICKERS = {"SPY": "SPY", "QQQ": "QQQ", "VIX": "^VIX"}
 
+# Stage 2 sentiment features (from news_articles -> news_sentiment, aggregated
+# into features_daily by build_sentiment_features.py). Rows with no news are
+# treated as neutral (filled with 0) rather than dropped.
+SENTIMENT_FEATURES = ["news_count", "avg_sentiment_score"]
+
 # Active feature set used for training. Set at runtime in train_model() once we
 # know whether market features are available.
 FEATURE_COLUMNS = SCALE_FREE_FEATURES + DERIVED_FEATURES
@@ -186,6 +191,7 @@ def fetch_features(supabase: Client) -> pd.DataFrame:
                     "date, stock_id, return_1d, return_5d, return_20d, "
                     "volatility_5d, volatility_20d, volume_change_1d, "
                     "moving_average_5d, moving_average_20d, rsi_14, macd, macd_signal, "
+                    "news_count, avg_sentiment_score, "
                     "target_next_day_return"
                 )
                 .order("date", desc=False)
@@ -219,7 +225,7 @@ def fetch_features(supabase: Client) -> pd.DataFrame:
             df["ticker"] = df["stock_id"].map(stock_map)
 
         # Ensure numeric types (Supabase numeric columns can arrive as strings)
-        numeric_cols = RAW_FETCH_COLUMNS + [RETURN_COLUMN]
+        numeric_cols = RAW_FETCH_COLUMNS + SENTIMENT_FEATURES + [RETURN_COLUMN]
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -756,6 +762,12 @@ def train_model():
     # Normalize price-scale features into scale-free ratios (suggestion #1)
     df = derive_normalized_features(df)
 
+    # Stage 2 sentiment: fill missing (no news) with neutral 0 so those rows are
+    # kept rather than dropped during cleaning.
+    for col in SENTIMENT_FEATURES:
+        df[col] = pd.to_numeric(df.get(col), errors="coerce").fillna(0.0)
+    sentiment_coverage = float((df["news_count"] > 0).mean())
+
     # Add market-wide context joined by date (suggestion #6). Degrades
     # gracefully to price-only if the market data can't be fetched.
     global FEATURE_COLUMNS
@@ -769,6 +781,11 @@ def train_model():
         logger.info(f"Added {len(MARKET_FEATURES)} market-wide features")
     else:
         logger.warning("Proceeding with price-only features (no market context)")
+    active_features += SENTIMENT_FEATURES
+    logger.info(
+        f"Added {len(SENTIMENT_FEATURES)} sentiment features "
+        f"(news present on {sentiment_coverage * 100:.1f}% of rows)"
+    )
     FEATURE_COLUMNS = active_features
     logger.info(f"Active feature set: {len(FEATURE_COLUMNS)} columns")
 
