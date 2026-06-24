@@ -129,7 +129,10 @@ python scripts/build_sentiment_features.py # aggregate -> features_daily sentime
 score into `news_sentiment` (`model_name='AlphaVantage'`). It is resumable
 (continues from the newest stored article, de-dupes by URL) and free-tier aware
 (stops cleanly at the ~25 requests/day cap — just re-run on subsequent days to
-backfill more history). Requires `ALPHA_VANTAGE_API_KEY` in `.env`.
+backfill more). By default it fetches the **last 12 months** (the window that
+overlaps validation/test); override with `NEWS_LOOKBACK_DAYS` (e.g. a large
+value to backfill all available history, ~2022+). Requires
+`ALPHA_VANTAGE_API_KEY` in `.env`.
 
 **`build_sentiment_features.py`** aggregates stored sentiment into the
 `features_daily` columns (`news_count`, `avg_sentiment_score`) using a

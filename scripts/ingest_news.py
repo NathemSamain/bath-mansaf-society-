@@ -30,7 +30,7 @@ import os
 import sys
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from dotenv import load_dotenv
@@ -47,8 +47,19 @@ ALPHA_VANTAGE_BASE_URL = "https://www.alphavantage.co/query"
 NEWS_FUNCTION = "NEWS_SENTIMENT"
 RATE_LIMIT_DELAY = 15          # seconds between calls (free tier ~5/min)
 PAGE_LIMIT = 1000              # max articles per request
-DEFAULT_TIME_FROM = "20220301T0000"  # AV news history starts ~2022
+# How far back to fetch, in days. The recent window overlaps the validation and
+# test sets (where sentiment can actually move the score) and is the cheapest /
+# densest to fetch. Override with NEWS_LOOKBACK_DAYS (e.g. set very large to
+# backfill all available history, ~2022+). AV news history starts around 2022.
+DEFAULT_LOOKBACK_DAYS = 365
 SENTIMENT_MODEL = "AlphaVantage"
+
+
+def lookback_time_from() -> str:
+    """AV time_from for the start of the configured recent window."""
+    days = int(os.environ.get("NEWS_LOOKBACK_DAYS", DEFAULT_LOOKBACK_DAYS))
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    return start.strftime("%Y%m%dT%H%M")
 
 
 def get_env_var(name: str) -> str:
@@ -79,10 +90,11 @@ def fetch_active_tickers(supabase: Client) -> list[dict]:
     return resp.data
 
 
-def latest_stored_time_from(supabase: Client, stock_id: str) -> str:
+def latest_stored_time_from(supabase: Client, stock_id: str, fallback: str) -> str:
     """
     Resume point: the AV time_from string just after the newest article we
     already stored for this ticker (so we fetch forward, not re-fetch history).
+    Falls back to the start of the configured lookback window if none stored.
     """
     resp = (
         supabase.table("news_articles")
@@ -95,7 +107,7 @@ def latest_stored_time_from(supabase: Client, stock_id: str) -> str:
     if resp.data:
         ts = datetime.fromisoformat(resp.data[0]["published_at"])
         return ts.astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
-    return DEFAULT_TIME_FROM
+    return fallback
 
 
 def existing_urls(supabase: Client, stock_id: str) -> set:
@@ -253,6 +265,9 @@ def ingest_news():
     supabase = init_supabase()
     tickers = fetch_active_tickers(supabase)
 
+    window_start = lookback_time_from()
+    logger.info(f"Fetching news from {window_start} onward (NEWS_LOOKBACK_DAYS)")
+
     request_count = 0
     total_articles = 0
 
@@ -260,7 +275,7 @@ def ingest_news():
         ticker, stock_id = stock["ticker"], stock["id"]
         logger.info(f"\n[{i}/{len(tickers)}] {ticker}")
 
-        time_from = latest_stored_time_from(supabase, stock_id)
+        time_from = latest_stored_time_from(supabase, stock_id, window_start)
         skip_urls = existing_urls(supabase, stock_id)
         logger.info(f"  Resuming from {time_from} ({len(skip_urls)} already stored)")
 
