@@ -261,6 +261,7 @@ def ingest_news():
     logger.info("News ingestion (Alpha Vantage NEWS_SENTIMENT)")
     logger.info("=" * 60)
 
+    load_dotenv()  # Load .env before reading any environment variables
     api_key = get_env_var("ALPHA_VANTAGE_API_KEY")
     supabase = init_supabase()
     tickers = fetch_active_tickers(supabase)
