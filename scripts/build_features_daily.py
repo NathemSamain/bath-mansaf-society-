@@ -354,11 +354,9 @@ def build_features_for_stock(
             "rsi_14": round(rsi_14[i], 4) if not np.isnan(rsi_14[i]) else None,
             "macd": round(macd[i], 6) if not np.isnan(macd[i]) else None,
             "macd_signal": round(macd_signal[i], 6) if not np.isnan(macd_signal[i]) else None,
-            "news_count": 0,  # Placeholder for future news integration
-            "avg_positive_sentiment": None,
-            "avg_negative_sentiment": None,
-            "avg_neutral_sentiment": None,
-            "avg_sentiment_score": None,
+            # Sentiment columns are intentionally omitted: they are owned by
+            # build_sentiment_features.py, and writing placeholders here would
+            # wipe them on every rebuild. New rows get the DB defaults.
             "target_next_day_direction": int(target_direction[i]) if not np.isnan(target_direction[i]) else None,
             "target_next_day_return": round(target_return[i], 6) if not np.isnan(target_return[i]) else None,
         }

@@ -110,8 +110,10 @@ MARKET_FEATURES = [
 MARKET_TICKERS = {"SPY": "SPY", "QQQ": "QQQ", "VIX": "^VIX"}
 
 # Stage 2 sentiment features (from news_articles -> news_sentiment, aggregated
-# into features_daily by build_sentiment_features.py). Rows with no news are
-# treated as neutral (filled with 0) rather than dropped.
+# into features_daily by build_sentiment_features.py). NOT used by this
+# production model: news only covers AAPL/MSFT from 2025-06-25 onward, so on the
+# full table these would be ~80%+ fake zeros ("no coverage", not "no news").
+# Their value is measured on the news window only by compare_sentiment_pilot.py.
 SENTIMENT_FEATURES = ["news_count", "avg_sentiment_score"]
 
 # Active feature set used for training. Set at runtime in train_model() once we
@@ -334,14 +336,14 @@ def validate_columns(df: pd.DataFrame) -> None:
     logger.info(f"All {len(required)} required columns present")
 
 
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+def clean_data(df: pd.DataFrame, feature_columns: list[str] | None = None) -> pd.DataFrame:
     """
     Remove rows with missing features or missing next-day return.
     """
     initial_count = len(df)
 
     # Need every feature and the continuous return to build a label.
-    check_cols = FEATURE_COLUMNS + [RETURN_COLUMN]
+    check_cols = (feature_columns or FEATURE_COLUMNS) + [RETURN_COLUMN]
     df_clean = df.dropna(subset=check_cols)
 
     removed = initial_count - len(df_clean)
@@ -475,9 +477,11 @@ def split_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFra
     )
 
 
-def prepare_matrices(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def prepare_matrices(
+    df: pd.DataFrame, feature_columns: list[str] | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Extract feature matrix X and binary label vector y."""
-    X = df[FEATURE_COLUMNS].values
+    X = df[feature_columns or FEATURE_COLUMNS].values
     y = df[LABEL_COLUMN].values.astype(int)
     return X, y
 
@@ -762,12 +766,6 @@ def train_model():
     # Normalize price-scale features into scale-free ratios (suggestion #1)
     df = derive_normalized_features(df)
 
-    # Stage 2 sentiment: fill missing (no news) with neutral 0 so those rows are
-    # kept rather than dropped during cleaning.
-    for col in SENTIMENT_FEATURES:
-        df[col] = pd.to_numeric(df.get(col), errors="coerce").fillna(0.0)
-    sentiment_coverage = float((df["news_count"] > 0).mean())
-
     # Add market-wide context joined by date (suggestion #6). Degrades
     # gracefully to price-only if the market data can't be fetched.
     global FEATURE_COLUMNS
@@ -781,10 +779,12 @@ def train_model():
         logger.info(f"Added {len(MARKET_FEATURES)} market-wide features")
     else:
         logger.warning("Proceeding with price-only features (no market context)")
-    active_features += SENTIMENT_FEATURES
+    # Sentiment is intentionally excluded here (see SENTIMENT_FEATURES note);
+    # run compare_sentiment_pilot.py for the news-window comparison.
+    sentiment_coverage = float((df["news_count"].fillna(0) > 0).mean())
     logger.info(
-        f"Added {len(SENTIMENT_FEATURES)} sentiment features "
-        f"(news present on {sentiment_coverage * 100:.1f}% of rows)"
+        f"Sentiment features not used (news present on only "
+        f"{sentiment_coverage * 100:.1f}% of rows)"
     )
     FEATURE_COLUMNS = active_features
     logger.info(f"Active feature set: {len(FEATURE_COLUMNS)} columns")
