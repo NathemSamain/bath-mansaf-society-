@@ -7,3 +7,6 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 yfinance>=0.2.40
 finnhub-python>=2.4.0
+transformers>=4.40.0
+# torch: install the CUDA build separately, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
