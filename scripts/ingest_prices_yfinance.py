@@ -16,6 +16,9 @@ Usage:
 Optional environment overrides (otherwise sensible defaults are used):
     YF_PERIOD       e.g. "5y", "10y", "max"   (default "5y")
     YF_START_DATE   e.g. "2015-01-01"         (overrides YF_PERIOD if set)
+    YF_APPEND       "1" to append instead of replace: existing rows are kept
+                    and each ticker downloads from a few days before its own
+                    latest stored date (upsert dedups on stock_id, date)
 
 Required environment variables (read from .env file):
     SUPABASE_URL
@@ -44,6 +47,9 @@ SOURCE_LABEL = "yfinance"
 DEFAULT_PERIOD = "5y"      # how much history to pull when no start date given
 UPSERT_BATCH_SIZE = 500    # rows per Supabase request
 INTER_TICKER_DELAY = 1.0   # polite pause between tickers (seconds)
+APPEND_OVERLAP_DAYS = 5    # re-fetch a few days before max date in append mode
+MARKET_TZ = "America/New_York"
+SESSION_SETTLED_MINUTES = 16 * 60 + 30  # 16:30 ET: today's bar is final after this
 
 
 def get_env_var(name: str) -> str:
@@ -85,14 +91,23 @@ def fetch_active_tickers(supabase: Client) -> list[dict]:
         sys.exit(1)
 
 
-def download_prices(ticker: str) -> pd.DataFrame | None:
+def latest_price_date(supabase: Client, stock_id: str) -> str | None:
+    """Most recent date stored in prices_daily for a stock, or None."""
+    resp = (
+        supabase.table("prices_daily").select("date").eq("stock_id", stock_id)
+        .order("date", desc=True).limit(1).execute()
+    )
+    return resp.data[0]["date"] if resp.data else None
+
+
+def download_prices(ticker: str, start_date: str | None = None) -> pd.DataFrame | None:
     """
     Download daily OHLCV history for a ticker from Yahoo Finance.
 
     Returns a DataFrame with single-level columns
     (Open, High, Low, Close, Adj Close, Volume) indexed by date, or None.
     """
-    start_date = os.environ.get("YF_START_DATE")
+    start_date = start_date or os.environ.get("YF_START_DATE")
     period = os.environ.get("YF_PERIOD", DEFAULT_PERIOD)
 
     try:
@@ -116,6 +131,17 @@ def download_prices(ticker: str) -> pd.DataFrame | None:
         # yfinance may return MultiIndex columns (field, ticker). Flatten to field.
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
+        # During the session yfinance returns today's still-moving bar. Storing
+        # it would also give yesterday's feature row a label built from a
+        # partial close, so drop it until the session has settled.
+        now_et = pd.Timestamp.now(tz=MARKET_TZ)
+        if now_et.hour * 60 + now_et.minute < SESSION_SETTLED_MINUTES:
+            today = now_et.strftime("%Y-%m-%d")
+            df = df[pd.to_datetime(df.index).strftime("%Y-%m-%d") < today]
+            if df.empty:
+                logger.warning(f"Only today's partial bar returned for {ticker}")
+                return None
 
         logger.info(f"Received {len(df)} daily records for {ticker}")
         return df
@@ -211,6 +237,10 @@ def ingest_prices():
         logger.error("No active tickers to process")
         sys.exit(1)
 
+    append_mode = os.environ.get("YF_APPEND") == "1"
+    if append_mode:
+        logger.info("Append mode: keeping existing rows, fetching only new dates")
+
     total_inserted = 0
     success_count = 0
 
@@ -220,7 +250,16 @@ def ingest_prices():
 
         logger.info(f"\n[{i}/{len(tickers)}] Processing {ticker}...")
 
-        df = download_prices(ticker)
+        start_date = None
+        if append_mode:
+            latest = latest_price_date(supabase, stock_id)
+            if latest:
+                start_date = (
+                    pd.Timestamp(latest) - pd.Timedelta(days=APPEND_OVERLAP_DAYS)
+                ).strftime("%Y-%m-%d")
+                logger.info(f"  Latest stored date {latest}; fetching from {start_date}")
+
+        df = download_prices(ticker, start_date)
         if df is None:
             logger.warning(f"Skipping {ticker} due to download error or empty response")
             continue
@@ -231,7 +270,9 @@ def ingest_prices():
             continue
 
         # Replace: clear old rows (synthetic or otherwise) then insert real data.
-        delete_existing_prices(supabase, stock_id, ticker)
+        # Append mode keeps history and relies on the (stock_id, date) upsert.
+        if not append_mode:
+            delete_existing_prices(supabase, stock_id, ticker)
         upserted = upsert_prices(supabase, records, ticker)
         total_inserted += upserted
         success_count += 1

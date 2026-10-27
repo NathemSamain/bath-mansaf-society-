@@ -53,6 +53,7 @@ PAGE_LIMIT = 1000              # max articles per request
 # backfill all available history, ~2022+). AV news history starts around 2022.
 DEFAULT_LOOKBACK_DAYS = 365
 SENTIMENT_MODEL = "AlphaVantage"
+PROVIDER = "alphavantage"     # news_articles.provider marker
 
 
 def lookback_time_from() -> str:
@@ -95,11 +96,13 @@ def latest_stored_time_from(supabase: Client, stock_id: str, fallback: str) -> s
     Resume point: the AV time_from string just after the newest article we
     already stored for this ticker (so we fetch forward, not re-fetch history).
     Falls back to the start of the configured lookback window if none stored.
+    Only Alpha Vantage rows count, so other providers don't move the resume point.
     """
     resp = (
         supabase.table("news_articles")
         .select("published_at")
         .eq("stock_id", stock_id)
+        .eq("provider", PROVIDER)
         .order("published_at", desc=True)
         .limit(1)
         .execute()
@@ -192,6 +195,7 @@ def parse_articles(stock_id: str, ticker: str, feed: list, skip_urls: set) -> tu
             "url": url,
             "author": ", ".join(authors)[:500] if authors else None,
             "raw_text": item.get("summary"),
+            "provider": PROVIDER,
         })
 
         # Pull the sentiment specific to THIS ticker (not the overall article).
@@ -261,6 +265,7 @@ def ingest_news():
     logger.info("News ingestion (Alpha Vantage NEWS_SENTIMENT)")
     logger.info("=" * 60)
 
+    load_dotenv()  # Load .env before reading any environment variables
     api_key = get_env_var("ALPHA_VANTAGE_API_KEY")
     supabase = init_supabase()
     tickers = fetch_active_tickers(supabase)
