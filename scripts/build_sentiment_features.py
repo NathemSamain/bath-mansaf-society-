@@ -13,13 +13,26 @@ trading day whose close falls on/after the article's timestamp:
 This guarantees row D only sees news from (close[D-1], close[D]] — i.e. news a
 trader could actually have known before the D -> D+1 prediction.
 
-For each (stock, trading day) we write:
-    news_count          - number of articles attached to that day
-    avg_sentiment_score - mean of available per-article sentiment scores
+Source: Finnhub articles (provider='finnhub') scored by FinBERT
+(model_name='finbert'). Alpha Vantage articles/sentiment are ignored so the two
+providers are never blended or double-counted on overlapping days.
 
-Other sentiment columns (avg_positive/negative/neutral) are left for a future
-FinBERT pass. Run this AFTER build_features_daily.py (which sets the price
-features) and after ingest_news.py.
+For each (stock, trading day) inside the ticker's news window (first to last
+trading day with news) we write:
+    news_count             - number of articles attached to that day
+    avg_sentiment_score    - mean FinBERT sentiment_score (positive - negative)
+    avg_positive_sentiment - mean FinBERT positive probability
+    avg_negative_sentiment - mean FinBERT negative probability
+    avg_neutral_sentiment  - mean FinBERT neutral probability
+
+A trading day inside the window with no articles is a REAL zero-news day: it
+gets news_count=0, avg_sentiment_score=0 and neutral probabilities (0/0/1), so
+it is kept rather than looking like missing data. Outside the window the
+sentiment columns are reset to the table defaults (news_count=0, averages
+NULL), which also clears values left by earlier aggregation runs.
+
+Run this AFTER build_features_daily.py (which sets the price features), after
+ingest_finnhub_news.py and after score_finbert_sentiment.py.
 
 Usage:
     python scripts/build_sentiment_features.py
@@ -46,10 +59,28 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+for _name in ("httpx", "httpx2"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 MARKET_TZ = ZoneInfo("America/New_York")
 MARKET_CLOSE_HOUR = 16          # 16:00 ET
 UPSERT_BATCH_SIZE = 500
+PROVIDER = "finnhub"            # news_articles.provider to aggregate
+SENTIMENT_MODEL = "finbert"     # news_sentiment.model_name to aggregate
+PROB_COLUMNS = {                # news_sentiment column -> features_daily column
+    "positive_score": "avg_positive_sentiment",
+    "negative_score": "avg_negative_sentiment",
+    "neutral_score": "avg_neutral_sentiment",
+}
+SENTIMENT_COLUMNS = ["avg_sentiment_score"] + list(PROB_COLUMNS.values())
+# Values for a trading day in the news window with no articles.
+ZERO_NEWS_VALUES = {
+    "news_count": 0,
+    "avg_sentiment_score": 0.0,
+    "avg_positive_sentiment": 0.0,
+    "avg_negative_sentiment": 0.0,
+    "avg_neutral_sentiment": 1.0,
+}
 
 
 def get_env_var(name: str) -> str:
@@ -103,32 +134,39 @@ def feature_dates(supabase: Client, stock_id: str) -> list[str]:
 
 
 def fetch_news_with_sentiment(supabase: Client, stock_id: str) -> pd.DataFrame:
-    """All articles for a stock joined to their sentiment score."""
+    """
+    Finnhub articles for a stock with their FinBERT scores, via an embedded
+    join filtered to SENTIMENT_MODEL (one request per page of articles).
+    """
     articles = _paginate(
         lambda off, b: supabase.table("news_articles")
-        .select("id, published_at").eq("stock_id", stock_id).range(off, off + b - 1)
-    )
-    if not articles:
-        return pd.DataFrame(columns=["published_at", "sentiment_score"])
-
-    art_df = pd.DataFrame(articles).rename(columns={"id": "news_id"})
-    ids = art_df["news_id"].tolist()
-
-    sent_rows = []
-    for i in range(0, len(ids), 200):
-        chunk = ids[i:i + 200]
-        resp = (
-            supabase.table("news_sentiment")
-            .select("news_id, sentiment_score")
-            .in_("news_id", chunk)
-            .execute()
+        .select(
+            "id, published_at, news_sentiment(sentiment_score, "
+            + ", ".join(PROB_COLUMNS) + ")"
         )
-        sent_rows.extend(resp.data or [])
-
-    sent_df = pd.DataFrame(sent_rows) if sent_rows else pd.DataFrame(
-        columns=["news_id", "sentiment_score"]
+        .eq("stock_id", stock_id)
+        .eq("provider", PROVIDER)
+        .eq("news_sentiment.model_name", SENTIMENT_MODEL)
+        # (provider, stock_id, published_at) index; id breaks timestamp ties so
+        # offset pagination is stable.
+        .order("published_at")
+        .order("id")
+        .range(off, off + b - 1)
     )
-    return art_df.merge(sent_df, on="news_id", how="left")
+    columns = ["news_id", "published_at", "sentiment_score", *PROB_COLUMNS]
+    if not articles:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    for a in articles:
+        scores = (a.get("news_sentiment") or [{}])[0]
+        rows.append({
+            "news_id": a["id"],
+            "published_at": a["published_at"],
+            "sentiment_score": scores.get("sentiment_score"),
+            **{c: scores.get(c) for c in PROB_COLUMNS},
+        })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def assign_trading_date(published_at: str, trading_dates: list[str]) -> str | None:
@@ -149,9 +187,13 @@ def assign_trading_date(published_at: str, trading_dates: list[str]) -> str | No
 
 
 def aggregate_stock(news_df: pd.DataFrame, trading_dates: list[str]) -> pd.DataFrame:
-    """Per trading day: news_count and avg_sentiment_score for one stock."""
+    """
+    Per trading day inside the ticker's news window: news_count and mean
+    FinBERT scores. Days in the window with no articles get ZERO_NEWS_VALUES.
+    """
+    out_cols = ["date", "news_count"] + SENTIMENT_COLUMNS
     if news_df.empty or not trading_dates:
-        return pd.DataFrame(columns=["date", "news_count", "avg_sentiment_score"])
+        return pd.DataFrame(columns=out_cols)
 
     df = news_df.copy()
     df["trading_date"] = df["published_at"].apply(
@@ -159,28 +201,46 @@ def aggregate_stock(news_df: pd.DataFrame, trading_dates: list[str]) -> pd.DataF
     )
     df = df.dropna(subset=["trading_date"])
     if df.empty:
-        return pd.DataFrame(columns=["date", "news_count", "avg_sentiment_score"])
+        return pd.DataFrame(columns=out_cols)
 
-    df["sentiment_score"] = pd.to_numeric(df["sentiment_score"], errors="coerce")
+    for col in ["sentiment_score", *PROB_COLUMNS]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     grouped = df.groupby("trading_date").agg(
         news_count=("news_id", "count"),
         avg_sentiment_score=("sentiment_score", "mean"),
-    ).reset_index().rename(columns={"trading_date": "date"})
-
-    # Round and replace NaN means (days where no article had a score) with None.
-    grouped["avg_sentiment_score"] = grouped["avg_sentiment_score"].round(4)
-    grouped = grouped.astype({"news_count": int})
-    grouped["avg_sentiment_score"] = grouped["avg_sentiment_score"].where(
-        grouped["avg_sentiment_score"].notna(), None
+        **{dst: (src, "mean") for src, dst in PROB_COLUMNS.items()},
     )
-    return grouped
+
+    # Every trading day between the first and last day with news is in the
+    # window; days without articles are real zero-news days, not missing.
+    window = [d for d in trading_dates if grouped.index.min() <= d <= grouped.index.max()]
+    grouped = grouped.reindex(window)
+    no_news = grouped["news_count"].isna()
+    for col, value in ZERO_NEWS_VALUES.items():
+        grouped.loc[no_news, col] = value
+    grouped["news_count"] = grouped["news_count"].astype(int)
+    grouped[SENTIMENT_COLUMNS] = grouped[SENTIMENT_COLUMNS].round(4)
+
+    return grouped.rename_axis("date").reset_index()[out_cols]
+
+
+def clear_outside_window(supabase: Client, stock_id: str, start: str, end: str) -> None:
+    """
+    Reset sentiment columns outside [start, end] to the table defaults, so no
+    stale values (e.g. from an earlier Alpha Vantage aggregation) remain.
+    """
+    reset = {"news_count": 0, **{c: None for c in SENTIMENT_COLUMNS}}
+    for bound in ("lt", "gt"):
+        query = supabase.table("features_daily").update(reset).eq("stock_id", stock_id)
+        getattr(query, bound)("date", start if bound == "lt" else end).execute()
 
 
 def upsert_sentiment(supabase: Client, stock_id: str, agg: pd.DataFrame) -> int:
     """
-    Write news_count / avg_sentiment_score into features_daily by (stock_id,date).
-    Upsert only touches these columns; existing price features are preserved
-    because every (stock_id, date) here already exists in features_daily.
+    Write news_count and the sentiment averages into features_daily by
+    (stock_id, date). Upsert only touches these columns; existing price
+    features are preserved because every (stock_id, date) here already exists
+    in features_daily.
     """
     if agg.empty:
         return 0
@@ -189,9 +249,7 @@ def upsert_sentiment(supabase: Client, stock_id: str, agg: pd.DataFrame) -> int:
             "stock_id": stock_id,
             "date": r["date"],
             "news_count": int(r["news_count"]),
-            "avg_sentiment_score": (
-                None if pd.isna(r["avg_sentiment_score"]) else r["avg_sentiment_score"]
-            ),
+            **{c: (None if pd.isna(r[c]) else float(r[c])) for c in SENTIMENT_COLUMNS},
         }
         for _, r in agg.iterrows()
     ]
@@ -213,27 +271,44 @@ def build_sentiment_features():
     supabase = init_supabase()
     tickers = fetch_active_tickers(supabase)
 
-    total_days = 0
+    total_days, summary = 0, []
     for i, stock in enumerate(tickers, 1):
         ticker, stock_id = stock["ticker"], stock["id"]
         dates = feature_dates(supabase, stock_id)
         news_df = fetch_news_with_sentiment(supabase, stock_id)
+        agg = aggregate_stock(news_df, dates)
 
-        if news_df.empty:
-            logger.info(f"[{i}/{len(tickers)}] {ticker}: no news stored, skipping")
+        if agg.empty:
+            # No Finnhub news for this ticker: reset every row to the defaults.
+            clear_outside_window(supabase, stock_id, "9999-12-31", "9999-12-31")
+            logger.info(f"[{i}/{len(tickers)}] {ticker}: no {PROVIDER} news, cleared")
             continue
 
-        agg = aggregate_stock(news_df, dates)
+        unscored = int(news_df["sentiment_score"].isna().sum())
+        if unscored:
+            logger.warning(
+                f"  {ticker}: {unscored} articles have no {SENTIMENT_MODEL} score "
+                f"(counted in news_count, excluded from averages)"
+            )
+
+        start, end = agg["date"].min(), agg["date"].max()
+        clear_outside_window(supabase, stock_id, start, end)
         written = upsert_sentiment(supabase, stock_id, agg)
         total_days += written
+        news_days = int((agg["news_count"] > 0).sum())
+        summary.append((ticker, news_days, written - news_days, start, end))
         logger.info(
             f"[{i}/{len(tickers)}] {ticker}: {len(news_df)} articles -> "
-            f"{written} trading days updated"
+            f"{written} trading days in window {start} -> {end}"
         )
 
-    logger.info("\n" + "=" * 60)
+    logger.info("=" * 60)
+    logger.info(f"{'Ticker':<7} {'News days':>9} {'Zero-news':>9}  {'First':<10}  {'Last':<10}")
+    logger.info("-" * 60)
+    for ticker, news_days, zero_days, start, end in sorted(summary):
+        logger.info(f"{ticker:<7} {news_days:>9} {zero_days:>9}  {start:<10}  {end:<10}")
+    logger.info("-" * 60)
     logger.info(f"Done. Updated sentiment on {total_days} (stock, day) rows.")
-    logger.info("Next: add sentiment to FEATURE_COLUMNS and rerun train_price_model.py")
     logger.info("=" * 60)
 
 

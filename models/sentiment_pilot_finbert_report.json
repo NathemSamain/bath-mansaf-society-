@@ -1,0 +1,610 @@
+{
+  "pilot_tickers": [
+    "AAPL",
+    "ADBE",
+    "AMAT",
+    "AMD",
+    "AMZN",
+    "AVGO",
+    "BAC",
+    "COST",
+    "CRM",
+    "DIS",
+    "GOOGL",
+    "IBM",
+    "INTC",
+    "JPM",
+    "LRCX",
+    "MA",
+    "META",
+    "MSFT",
+    "NFLX",
+    "NOW",
+    "NVDA",
+    "ORCL",
+    "PLTR",
+    "QCOM",
+    "SHOP",
+    "TSLA",
+    "TXN",
+    "UBER",
+    "V",
+    "WMT"
+  ],
+  "sentiment_source": "finnhub articles scored by FinBERT",
+  "news_window": {
+    "tickers": [
+      "AAPL",
+      "ADBE",
+      "AMAT",
+      "AMD",
+      "AMZN",
+      "AVGO",
+      "BAC",
+      "COST",
+      "CRM",
+      "DIS",
+      "GOOGL",
+      "IBM",
+      "INTC",
+      "JPM",
+      "LRCX",
+      "MA",
+      "META",
+      "MSFT",
+      "NFLX",
+      "NOW",
+      "NVDA",
+      "ORCL",
+      "PLTR",
+      "QCOM",
+      "SHOP",
+      "TSLA",
+      "TXN",
+      "UBER",
+      "V",
+      "WMT"
+    ],
+    "start": "2025-11-01",
+    "end": "2026-10-22",
+    "days": 244,
+    "rows": 7320,
+    "zero_news_rows": 12,
+    "per_ticker_coverage": {
+      "AAPL": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "ADBE": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "AMAT": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 243,
+        "share_of_all_days": 0.1824
+      },
+      "AMD": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "AMZN": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "AVGO": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "BAC": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "COST": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "CRM": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "DIS": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "GOOGL": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "IBM": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "INTC": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "JPM": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "LRCX": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "MA": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 244,
+        "share_of_all_days": 0.1832
+      },
+      "META": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "MSFT": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "NFLX": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "NOW": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 244,
+        "share_of_all_days": 0.1832
+      },
+      "NVDA": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "ORCL": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "PLTR": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "QCOM": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 242,
+        "share_of_all_days": 0.1817
+      },
+      "SHOP": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 243,
+        "share_of_all_days": 0.1824
+      },
+      "TSLA": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "TXN": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 242,
+        "share_of_all_days": 0.1817
+      },
+      "UBER": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "V": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      },
+      "WMT": {
+        "first": "2025-10-31",
+        "last": "2026-10-22",
+        "news_days": 245,
+        "share_of_all_days": 0.1839
+      }
+    }
+  },
+  "market_features_used": true,
+  "feature_sets": {
+    "price": [
+      "return_1d",
+      "return_5d",
+      "return_20d",
+      "volatility_5d",
+      "volatility_20d",
+      "volume_change_1d",
+      "rsi_14",
+      "ma_5_vs_20",
+      "macd_norm",
+      "macd_signal_norm",
+      "macd_hist_norm",
+      "mkt_spy_ret_1d",
+      "mkt_spy_ret_5d",
+      "mkt_qqq_ret_1d",
+      "mkt_vix",
+      "mkt_vix_chg_1d"
+    ],
+    "price+sent": [
+      "return_1d",
+      "return_5d",
+      "return_20d",
+      "volatility_5d",
+      "volatility_20d",
+      "volume_change_1d",
+      "rsi_14",
+      "ma_5_vs_20",
+      "macd_norm",
+      "macd_signal_norm",
+      "macd_hist_norm",
+      "mkt_spy_ret_1d",
+      "mkt_spy_ret_5d",
+      "mkt_qqq_ret_1d",
+      "mkt_vix",
+      "mkt_vix_chg_1d",
+      "news_count",
+      "avg_sentiment_score",
+      "avg_positive_sentiment",
+      "avg_negative_sentiment",
+      "avg_neutral_sentiment"
+    ]
+  },
+  "label_threshold_up": 0.5,
+  "label_threshold_down": -0.5,
+  "rows_after_thresholding": 5751,
+  "zero_news_rows_after_thresholding": 9,
+  "split_rows": {
+    "train": 4001,
+    "validation": 901,
+    "test": 849
+  },
+  "calibration": {
+    "method": "sigmoid",
+    "fit_on": "newest 20% of training dates; models trained on the older dates"
+  },
+  "test_baselines": {
+    "Always-UP": {
+      "accuracy": 0.5006,
+      "precision": 0.5006,
+      "recall": 1.0,
+      "f1": 0.6672,
+      "mcc": 0.0,
+      "auc": null
+    },
+    "Persistence": {
+      "accuracy": 0.4982,
+      "precision": 0.4988,
+      "recall": 0.4965,
+      "f1": 0.4976,
+      "mcc": -0.0035,
+      "auc": null
+    },
+    "Random": {
+      "accuracy": 0.4876,
+      "precision": 0.4883,
+      "recall": 0.4894,
+      "f1": 0.4888,
+      "mcc": -0.0247,
+      "auc": null
+    }
+  },
+  "split_results": {
+    "price": {
+      "models": {
+        "Logistic Regression": {
+          "calibrated": true,
+          "validation": {
+            "accuracy": 0.5017,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "mcc": -0.0736,
+            "auc": 0.5228
+          },
+          "test": {
+            "accuracy": 0.4994,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "auc": 0.4916
+          },
+          "test_collapse": {
+            "dominant_class": 0,
+            "dominant_class_share": 1.0,
+            "collapsed": true
+          }
+        },
+        "Random Forest": {
+          "calibrated": true,
+          "validation": {
+            "accuracy": 0.5072,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "auc": 0.4633
+          },
+          "test": {
+            "accuracy": 0.4994,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "auc": 0.5113
+          },
+          "test_collapse": {
+            "dominant_class": 0,
+            "dominant_class_share": 1.0,
+            "collapsed": true
+          }
+        }
+      },
+      "best_model": "Random Forest"
+    },
+    "price+sent": {
+      "models": {
+        "Logistic Regression": {
+          "calibrated": true,
+          "validation": {
+            "accuracy": 0.5017,
+            "precision": 0.3684,
+            "recall": 0.0158,
+            "f1": 0.0302,
+            "mcc": -0.0365,
+            "auc": 0.5197
+          },
+          "test": {
+            "accuracy": 0.4994,
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "mcc": 0.0,
+            "auc": 0.4918
+          },
+          "test_collapse": {
+            "dominant_class": 0,
+            "dominant_class_share": 1.0,
+            "collapsed": true
+          }
+        },
+        "Random Forest": {
+          "calibrated": true,
+          "validation": {
+            "accuracy": 0.495,
+            "precision": 0.4864,
+            "recall": 0.4414,
+            "f1": 0.4628,
+            "mcc": -0.0116,
+            "auc": 0.4731
+          },
+          "test": {
+            "accuracy": 0.4982,
+            "precision": 0.4987,
+            "recall": 0.4682,
+            "f1": 0.483,
+            "mcc": -0.0035,
+            "auc": 0.5027
+          },
+          "test_collapse": {
+            "dominant_class": 0,
+            "dominant_class_share": 0.53,
+            "collapsed": false
+          }
+        }
+      },
+      "best_model": "Random Forest"
+    }
+  },
+  "walk_forward": {
+    "initial_train_share": 0.5,
+    "folds": 5,
+    "price": {
+      "pooled": {
+        "Logistic Regression": {
+          "accuracy": 0.4997,
+          "precision": 0.4943,
+          "recall": 0.2671,
+          "f1": 0.3468,
+          "mcc": -0.0036,
+          "auc": 0.4956,
+          "n": 2944
+        },
+        "Random Forest": {
+          "accuracy": 0.4946,
+          "precision": 0.4902,
+          "recall": 0.4098,
+          "f1": 0.4464,
+          "mcc": -0.012,
+          "auc": 0.4964,
+          "n": 2944
+        }
+      },
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 2807,
+          "test_rows": 608,
+          "test_start": "2026-04-30",
+          "test_end": "2026-06-04",
+          "mcc": {
+            "Logistic Regression": -0.0181,
+            "Random Forest": -0.0228
+          }
+        },
+        {
+          "fold": 2,
+          "train_rows": 3415,
+          "test_rows": 637,
+          "test_start": "2026-06-05",
+          "test_end": "2026-07-13",
+          "mcc": {
+            "Logistic Regression": -0.0994,
+            "Random Forest": -0.0707
+          }
+        },
+        {
+          "fold": 3,
+          "train_rows": 4052,
+          "test_rows": 593,
+          "test_start": "2026-07-14",
+          "test_end": "2026-08-14",
+          "mcc": {
+            "Logistic Regression": 0.1324,
+            "Random Forest": 0.1055
+          }
+        },
+        {
+          "fold": 4,
+          "train_rows": 4645,
+          "test_rows": 562,
+          "test_start": "2026-08-17",
+          "test_end": "2026-09-18",
+          "mcc": {
+            "Logistic Regression": 0.0322,
+            "Random Forest": -0.0194
+          }
+        },
+        {
+          "fold": 5,
+          "train_rows": 5207,
+          "test_rows": 544,
+          "test_start": "2026-09-21",
+          "test_end": "2026-10-22",
+          "mcc": {
+            "Logistic Regression": -0.0444,
+            "Random Forest": -0.0581
+          }
+        }
+      ]
+    },
+    "price+sent": {
+      "pooled": {
+        "Logistic Regression": {
+          "accuracy": 0.5051,
+          "precision": 0.5045,
+          "recall": 0.2664,
+          "f1": 0.3487,
+          "mcc": 0.0086,
+          "auc": 0.4962,
+          "n": 2944
+        },
+        "Random Forest": {
+          "accuracy": 0.5132,
+          "precision": 0.5124,
+          "recall": 0.4372,
+          "f1": 0.4718,
+          "mcc": 0.026,
+          "auc": 0.5095,
+          "n": 2944
+        }
+      },
+      "folds": [
+        {
+          "fold": 1,
+          "train_rows": 2807,
+          "test_rows": 608,
+          "test_start": "2026-04-30",
+          "test_end": "2026-06-04",
+          "mcc": {
+            "Logistic Regression": 0.023,
+            "Random Forest": -0.003
+          }
+        },
+        {
+          "fold": 2,
+          "train_rows": 3415,
+          "test_rows": 637,
+          "test_start": "2026-06-05",
+          "test_end": "2026-07-13",
+          "mcc": {
+            "Logistic Regression": -0.0972,
+            "Random Forest": -0.0238
+          }
+        },
+        {
+          "fold": 3,
+          "train_rows": 4052,
+          "test_rows": 593,
+          "test_start": "2026-07-14",
+          "test_end": "2026-08-14",
+          "mcc": {
+            "Logistic Regression": 0.1216,
+            "Random Forest": 0.0775
+          }
+        },
+        {
+          "fold": 4,
+          "train_rows": 4645,
+          "test_rows": 562,
+          "test_start": "2026-08-17",
+          "test_end": "2026-09-18",
+          "mcc": {
+            "Logistic Regression": 0.0923,
+            "Random Forest": 0.068
+          }
+        },
+        {
+          "fold": 5,
+          "train_rows": 5207,
+          "test_rows": 544,
+          "test_start": "2026-09-21",
+          "test_end": "2026-10-22",
+          "mcc": {
+            "Logistic Regression": -0.0335,
+            "Random Forest": 0.0209
+          }
+        }
+      ]
+    }
+  },
+  "created_at": "2026-11-17T19:14:41Z"
+}

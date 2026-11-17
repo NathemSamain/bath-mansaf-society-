@@ -2,29 +2,27 @@
 """
 Pilot comparison: price-only vs price+sentiment, restricted to the news window.
 
-News only exists for a small slice of the feature table (AAPL + MSFT, from
-2025-06-25; MSFT news ends 2026-03-25), i.e. ~20% of AAPL days and ~15% of MSFT
-days. Comparing on the full table would mostly measure "no coverage" rows
-masquerading as zero-news days. So this script:
+Sentiment comes from Finnhub articles scored by FinBERT and aggregated into
+features_daily by build_sentiment_features.py. It only exists inside each
+ticker's news window (Finnhub's ~1-year free history), so comparing on the
+full 5-year table would mostly measure rows with no coverage. This script:
 
-  1. Restricts to PILOT_TICKERS.
-  2. Finds each ticker's news coverage (first/last trading day with
-     news_count > 0) and keeps only the COMMON window across tickers, so both
-     tickers are present on every date and the date-based split stays balanced.
-  3. Inside that window, a day with no articles is a REAL zero: news_count = 0
-     and avg_sentiment_score = 0 (neutral). These rows are kept, never dropped.
+  1. Uses PILOT_TICKERS (None = every ticker with news; currently all 30).
+  2. Finds each ticker's news window (first/last trading day with
+     news_count > 0), keeps only the COMMON window across tickers, and clamps
+     its start to WINDOW_START to drop the partially covered first day.
+  3. Inside that window, a day with no articles is a REAL zero: news_count = 0,
+     avg_sentiment_score = 0 and neutral probabilities. These rows are kept.
   4. Builds one labeled dataset with the union of features and evaluates both
      feature sets on the exact same rows and splits:
        - 70/15/15 date split (same protocol as train_price_model.py)
        - expanding-window walk-forward, pooling out-of-sample predictions, which
          gives a larger evaluation sample than the ~15% test slice.
 
-Expect only ~250-350 usable rows after thresholding: treat results as a pilot,
-not as evidence either way. Nothing here overwrites the production model; the
-report is written to models/sentiment_pilot_report.json.
+Nothing here overwrites the production model; the report is written to
+REPORT_PATH.
 
-Prerequisite: run build_sentiment_features.py so features_daily has news_count
-populated (the column defaults to 0, so un-built rows look like zero-news days).
+Prerequisite: run build_sentiment_features.py first.
 
 Usage:
     python scripts/compare_sentiment_pilot.py
@@ -44,20 +42,41 @@ from train_price_model import (
     SCALE_FREE_FEATURES,
     DERIVED_FEATURES,
     MARKET_FEATURES,
-    SENTIMENT_FEATURES,
     LABEL_COLUMN,
 )
 
 logger = logging.getLogger(__name__)
 
-PILOT_TICKERS = ["AAPL", "MSFT"]
+PILOT_TICKERS = None            # None = every ticker with news in features_daily
+
+# Finnhub coverage starts 2025-10-31 00:00 UTC, so that first trading day is
+# missing the previous evening's news. Start the window the day after.
+WINDOW_START = "2025-11-01"
+
+# FinBERT aggregates written by build_sentiment_features.py.
+PILOT_SENTIMENT_FEATURES = [
+    "news_count",
+    "avg_sentiment_score",
+    "avg_positive_sentiment",
+    "avg_negative_sentiment",
+    "avg_neutral_sentiment",
+]
+PROBABILITY_FEATURES = PILOT_SENTIMENT_FEATURES[2:]
+# Values for an in-window trading day with no articles (matches the builder).
+ZERO_NEWS_VALUES = {
+    "news_count": 0,
+    "avg_sentiment_score": 0.0,
+    "avg_positive_sentiment": 0.0,
+    "avg_negative_sentiment": 0.0,
+    "avg_neutral_sentiment": 1.0,
+}
 
 # Walk-forward: train on the first WF_INITIAL_TRAIN share of dates, then roll
 # through the rest in WF_FOLDS contiguous blocks (expanding training window).
 WF_INITIAL_TRAIN = 0.5
 WF_FOLDS = 5
 
-REPORT_PATH = Path("models") / "sentiment_pilot_report.json"
+REPORT_PATH = Path("models") / "sentiment_pilot_finbert_report.json"
 
 
 def restrict_to_news_window(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -65,15 +84,16 @@ def restrict_to_news_window(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     Keep PILOT_TICKERS rows inside the common news-coverage window, and turn
     missing sentiment inside that window into real zeros.
     """
-    df = df[df["ticker"].isin(PILOT_TICKERS)].copy()
-    missing = sorted(set(PILOT_TICKERS) - set(df["ticker"].unique()))
+    with_news = df[df["news_count"].fillna(0) > 0]
+    tickers = PILOT_TICKERS or sorted(with_news["ticker"].unique())
+    df = df[df["ticker"].isin(tickers)].copy()
+    missing = sorted(set(tickers) - set(df["ticker"].unique()))
     if missing:
         logger.error(f"Pilot tickers not found in features_daily: {missing}")
         sys.exit(1)
 
-    with_news = df[df["news_count"].fillna(0) > 0]
     coverage = {}
-    for ticker in PILOT_TICKERS:
+    for ticker in tickers:
         dates = with_news.loc[with_news["ticker"] == ticker, "date"]
         if dates.empty:
             logger.error(
@@ -95,7 +115,7 @@ def restrict_to_news_window(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             f"{coverage[ticker]['share_of_all_days'] * 100:.1f}% of its rows)"
         )
 
-    window_start = max(c["first"] for c in coverage.values())
+    window_start = max([WINDOW_START] + [c["first"] for c in coverage.values()])
     window_end = min(c["last"] for c in coverage.values())
     df = df[(df["date"] >= window_start) & (df["date"] <= window_end)].copy()
     logger.info(
@@ -104,15 +124,17 @@ def restrict_to_news_window(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     )
 
     # Inside the window, absence of news is a genuine observation: 0 articles
-    # and neutral sentiment. Fill explicitly so these rows survive cleaning.
+    # and neutral sentiment. The builder already writes these values; fill
+    # explicitly anyway so such rows can never be dropped during cleaning.
     df["news_count"] = df["news_count"].fillna(0)
-    df["avg_sentiment_score"] = df["avg_sentiment_score"].where(
-        df["news_count"] > 0, 0.0
-    ).fillna(0.0)
-    zero_news = int((df["news_count"] == 0).sum())
+    no_news = df["news_count"] == 0
+    for col, value in ZERO_NEWS_VALUES.items():
+        df.loc[no_news, col] = value
+    zero_news = int(no_news.sum())
     logger.info(f"Zero-news days kept as real zeros: {zero_news}")
 
     window = {
+        "tickers": tickers,
         "start": window_start,
         "end": window_end,
         "days": int(df["date"].nunique()),
@@ -123,26 +145,48 @@ def restrict_to_news_window(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return df, window
 
 
+def fetch_probability_features(supabase) -> pd.DataFrame:
+    """
+    FinBERT class-probability averages from features_daily, which the shared
+    production fetch does not select. Only rows from WINDOW_START on are needed.
+    """
+    rows = tpm.fetch_paginated(
+        lambda: supabase.table("features_daily")
+        .select("stock_id, date, " + ", ".join(PROBABILITY_FEATURES))
+        .gte("date", WINDOW_START)
+        .order("date").order("stock_id")
+    )
+    probs = pd.DataFrame(rows, columns=["stock_id", "date", *PROBABILITY_FEATURES])
+    tpm.verify_stock_date_rows(supabase, probs, "features_daily", since=WINDOW_START)
+    for col in PROBABILITY_FEATURES:
+        probs[col] = pd.to_numeric(probs[col], errors="coerce")
+    return probs
+
+
+# The same two model families as the production pipeline.
+TRAINERS = {
+    "Logistic Regression": tpm.train_logistic_regression,
+    "Random Forest": tpm.train_random_forest,
+}
+
+
 def fit_models(X_train, y_train) -> dict:
-    """Fit the same two model families as the production pipeline."""
-    return {
-        "Logistic Regression": tpm.train_logistic_regression(X_train, y_train),
-        "Random Forest": tpm.train_random_forest(X_train, y_train),
-    }
+    """Fit every model family on (X_train, y_train), uncalibrated."""
+    return {name: train(X_train, y_train) for name, train in TRAINERS.items()}
 
 
 def evaluate_split(train_df, val_df, test_df, features: list[str]) -> dict:
     """
-    Production protocol on one feature set: fit on train, calibrate on val,
-    select by val MCC (F1 tie-break), report the selected model on test.
+    Production protocol on one feature set: fit on the older training dates,
+    calibrate on the newest training dates, select by val MCC (F1 tie-break),
+    report the selected model on test.
     """
-    X_train, y_train = tpm.prepare_matrices(train_df, features)
     X_val, y_val = tpm.prepare_matrices(val_df, features)
     X_test, y_test = tpm.prepare_matrices(test_df, features)
 
     results = {}
-    for name, raw in fit_models(X_train, y_train).items():
-        model, calibrated = tpm.calibrate_model(raw, X_val, y_val)
+    for name, train in TRAINERS.items():
+        model, calibrated = tpm.fit_calibrated(train, train_df, features)
         val_m = tpm.compute_metrics(y_val, model.predict(X_val))
         val_m["auc"] = tpm.compute_auc(y_val, tpm.positive_scores(model, X_val))
         test_pred = model.predict(X_test)
@@ -230,6 +274,7 @@ def run_pilot():
     df = tpm.fetch_features(supabase)
     tpm.validate_columns(df)
     df = tpm.derive_normalized_features(df)
+    df = df.merge(fetch_probability_features(supabase), on=["stock_id", "date"], how="left")
 
     df, window = restrict_to_news_window(df)
 
@@ -240,7 +285,7 @@ def run_pilot():
         price_features += MARKET_FEATURES
     arms = {
         "price": price_features,
-        "price+sent": price_features + SENTIMENT_FEATURES,
+        "price+sent": price_features + PILOT_SENTIMENT_FEATURES,
     }
 
     # Clean on the union of features so both arms see the exact same rows.
@@ -286,7 +331,8 @@ def run_pilot():
     )
 
     report = {
-        "pilot_tickers": PILOT_TICKERS,
+        "pilot_tickers": window["tickers"],
+        "sentiment_source": "finnhub articles scored by FinBERT",
         "news_window": window,
         "market_features_used": market_df is not None,
         "feature_sets": arms,
@@ -296,6 +342,9 @@ def run_pilot():
         "zero_news_rows_after_thresholding": int((df["news_count"] == 0).sum()),
         "split_rows": {"train": len(train_df), "validation": len(val_df),
                        "test": len(test_df)},
+        "calibration": {"method": tpm.CALIBRATION_METHOD,
+                        "fit_on": f"newest {tpm.CALIBRATION_SHARE:.0%} of training "
+                                  "dates; models trained on the older dates"},
         "test_baselines": baselines,
         "split_results": split_results,
         "walk_forward": {"initial_train_share": WF_INITIAL_TRAIN,

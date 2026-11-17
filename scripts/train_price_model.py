@@ -11,7 +11,8 @@ price-only baseline:
   2. Matthews Correlation Coefficient (MCC) + ROC-AUC alongside Acc/Prec/Rec/F1.
   3. Naive baselines: Always-UP, Persistence, Random (class-balanced).
   4. Lag-mimic diagnostic (does the model just copy yesterday's direction?).
-  5. Probability calibration via CalibratedClassifierCV.
+  5. Probability calibration (sigmoid), fit on the newest 20% of training
+     dates while the model trains on the older 80% (time-aware, no shuffling).
   6. A single comparison table across models + baselines.
   7. Model selection by validation MCC (F1 as tie-breaker).
   8. Scale-free price features (MA/MACD ratios instead of dollar levels).
@@ -150,8 +151,17 @@ LAG_MIMIC_AGREEMENT_WARN = 0.90   # agrees with prev day > 90% of the time
 CLASS_COLLAPSE_WARN = 0.90
 
 # Calibration method. Sigmoid (Platt) is monotonic and robust on small
-# validation sets, so it mainly fixes probabilities without thrashing labels.
+# calibration sets, so it mainly fixes probabilities without thrashing labels.
 CALIBRATION_METHOD = "sigmoid"
+
+# Time-aware calibration: the newest CALIBRATION_SHARE of a training window's
+# dates is held out to fit the calibrator; the model trains on the older dates.
+# Validation and test stay untouched, so selecting by validation MCC is
+# out-of-sample for both the model and its calibrator.
+CALIBRATION_SHARE = 0.20
+
+# PostgREST caps a single response at 1000 rows.
+PAGE_SIZE = 1000
 
 
 def get_env_var(name: str) -> str:
@@ -174,43 +184,91 @@ def init_supabase() -> Client:
     return client
 
 
+def fetch_paginated(build_query) -> list[dict]:
+    """
+    Fetch every row of a select with offset pagination. build_query() must
+    return a fresh query whose ORDER BY is unique per row, e.g. (date,
+    stock_id): rows tied on the sort key can come back in a different order on
+    each request, so ties straddling a page boundary get duplicated or skipped.
+    """
+    rows, offset = [], 0
+    while True:
+        page = build_query().range(offset, offset + PAGE_SIZE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            return rows
+        offset += PAGE_SIZE
+
+
+def verify_stock_date_rows(
+    supabase: Client,
+    df: pd.DataFrame,
+    table: str,
+    stocks: list[dict] | None = None,
+    since: str | None = None,
+) -> None:
+    """
+    Check rows fetched from a per-(stock_id, date) table against the database:
+    no (stock_id, date) pair may repeat, and every ticker must have exactly as
+    many rows as `table` stores for it (date >= since, if given). Logs the
+    per-ticker counts; exits on any duplicate or mismatch.
+    """
+    dupes = df[df.duplicated(["stock_id", "date"], keep=False)]
+    if not dupes.empty:
+        logger.error(
+            f"{table}: {len(dupes)} rows share a (stock_id, date) with another "
+            f"row, e.g.\n{dupes[['stock_id', 'date']].head(10).to_string(index=False)}"
+        )
+        sys.exit(1)
+
+    if stocks is None:
+        stocks = supabase.table("stocks").select("id, ticker").execute().data
+    fetched = df.groupby("stock_id").size()
+    counts, mismatched = [], []
+    for s in sorted(stocks, key=lambda s: s["ticker"]):
+        query = (
+            supabase.table(table).select("stock_id", count="exact", head=True)
+            .eq("stock_id", s["id"])
+        )
+        if since:
+            query = query.gte("date", since)
+        stored = query.execute().count or 0
+        got = int(fetched.get(s["id"], 0))
+        if stored or got:
+            counts.append(f"{s['ticker']} {got}")
+        if got != stored:
+            mismatched.append(f"{s['ticker']}: fetched {got}, stored {stored}")
+
+    scope = f"{table}" + (f" (date >= {since})" if since else "")
+    logger.info(f"Rows per ticker, {scope}: {len(counts)} tickers, {len(df)} rows")
+    for i in range(0, len(counts), 10):
+        logger.info("  " + "  ".join(f"{c:<11}" for c in counts[i:i + 10]))
+    if mismatched:
+        logger.error(f"{scope}: fetched counts differ from stored: {mismatched}")
+        sys.exit(1)
+    logger.info(f"  No duplicate (stock_id, date); every count matches {table}")
+
+
 def fetch_features(supabase: Client) -> pd.DataFrame:
     """
-    Fetch all feature rows from database with stock ticker mapping.
-    Uses pagination to load all rows (Supabase defaults to 1000 max per request).
+    Fetch all feature rows from database with stock ticker mapping. Paginated
+    on a unique (date, stock_id) order, then verified against stored counts.
     """
     try:
-        all_rows = []
-        batch_size = 1000
-        offset = 0
-
-        while True:
-            # Fetch features with pagination using range. We pull the
-            # continuous next-day return so we can build thresholded labels.
-            response = (
-                supabase.table("features_daily")
-                .select(
-                    "date, stock_id, return_1d, return_5d, return_20d, "
-                    "volatility_5d, volatility_20d, volume_change_1d, "
-                    "moving_average_5d, moving_average_20d, rsi_14, macd, macd_signal, "
-                    "news_count, avg_sentiment_score, "
-                    "target_next_day_return"
-                )
-                .order("date", desc=False)
-                .range(offset, offset + batch_size - 1)
-                .execute()
+        # We pull the continuous next-day return so we can build thresholded
+        # labels.
+        all_rows = fetch_paginated(
+            lambda: supabase.table("features_daily")
+            .select(
+                "date, stock_id, return_1d, return_5d, return_20d, "
+                "volatility_5d, volatility_20d, volume_change_1d, "
+                "moving_average_5d, moving_average_20d, rsi_14, macd, macd_signal, "
+                "news_count, avg_sentiment_score, "
+                "target_next_day_return"
             )
-
-            if not response.data:
-                break
-
-            all_rows.extend(response.data)
-
-            # Check if we got fewer rows than batch size (end of data)
-            if len(response.data) < batch_size:
-                break
-
-            offset += batch_size
+            .order("date")
+            .order("stock_id")
+        )
 
         if not all_rows:
             logger.error("No rows found in features_daily table")
@@ -225,6 +283,8 @@ def fetch_features(supabase: Client) -> pd.DataFrame:
         if stocks_response.data:
             stock_map = {s["id"]: s["ticker"] for s in stocks_response.data}
             df["ticker"] = df["stock_id"].map(stock_map)
+
+        verify_stock_date_rows(supabase, df, "features_daily", stocks_response.data)
 
         # Ensure numeric types (Supabase numeric columns can arrive as strings)
         numeric_cols = RAW_FETCH_COLUMNS + SENTIMENT_FEATURES + [RETURN_COLUMN]
@@ -659,16 +719,45 @@ def train_random_forest(X_train: np.ndarray, y_train: np.ndarray) -> RandomFores
     return model
 
 
-def calibrate_model(fitted_estimator, X_val: np.ndarray, y_val: np.ndarray):
+def split_calibration_window(
+    train_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Wrap an already-fitted estimator in CalibratedClassifierCV using the
-    validation set (cv='prefit'). Returns (estimator, calibrated_flag).
-    Falls back to the uncalibrated estimator if calibration fails.
+    Split a training window by date, without shuffling: the older
+    (1 - CALIBRATION_SHARE) of its dates fit the model, the newest
+    CALIBRATION_SHARE fit the calibrator. Every ticker of a date stays on one
+    side.
     """
-    # Need both classes present in the validation set to calibrate.
-    if len(np.unique(y_val)) < 2:
+    dates = np.sort(train_df["date"].unique())
+    cut = dates[int(len(dates) * (1 - CALIBRATION_SHARE))]
+    return train_df[train_df["date"] < cut], train_df[train_df["date"] >= cut]
+
+
+def fit_calibrated(
+    train_fn, train_df: pd.DataFrame, feature_columns: list[str] | None = None
+):
+    """
+    Train with train_fn(X, y) on the older dates of train_df and calibrate on
+    its newest CALIBRATION_SHARE of dates. Returns (estimator, calibrated_flag).
+    """
+    fit_df, calib_df = split_calibration_window(train_df)
+    X_fit, y_fit = prepare_matrices(fit_df, feature_columns)
+    X_cal, y_cal = prepare_matrices(calib_df, feature_columns)
+    return calibrate_model(train_fn(X_fit, y_fit), X_cal, y_cal)
+
+
+def calibrate_model(fitted_estimator, X_cal: np.ndarray, y_cal: np.ndarray):
+    """
+    Fit a sigmoid calibrator for an already-fitted estimator, which is frozen
+    and never refit. The calibration rows must be later in time than the
+    estimator's training rows and must not be scored afterwards (see
+    fit_calibrated). Returns (estimator, calibrated_flag); falls back to the
+    uncalibrated estimator if calibration fails.
+    """
+    # Need both classes present in the calibration rows.
+    if len(np.unique(y_cal)) < 2:
         logger.warning(
-            "Validation set has a single class; skipping calibration."
+            "Calibration rows have a single class; skipping calibration."
         )
         return fitted_estimator, False
 
@@ -677,9 +766,13 @@ def calibrate_model(fitted_estimator, X_val: np.ndarray, y_val: np.ndarray):
         # both so calibration works across the version range in requirements.
         try:
             from sklearn.frozen import FrozenEstimator
+            # ensemble=False: a single calibrator fit on all calibration rows.
+            # The estimator is frozen, so the internal cv folds only re-predict
+            # with the same model; no fold is trained on other dates.
             calibrated = CalibratedClassifierCV(
                 FrozenEstimator(fitted_estimator),
                 method=CALIBRATION_METHOD,
+                ensemble=False,
             )
         except ImportError:
             calibrated = CalibratedClassifierCV(
@@ -687,7 +780,7 @@ def calibrate_model(fitted_estimator, X_val: np.ndarray, y_val: np.ndarray):
                 method=CALIBRATION_METHOD,
                 cv="prefit",
             )
-        calibrated.fit(X_val, y_val)
+        calibrated.fit(X_cal, y_cal)
         return calibrated, True
     except Exception as e:
         logger.warning(f"Calibration failed ({e}); using uncalibrated model.")
@@ -857,13 +950,29 @@ def train_model():
     logger.info("Training Baseline Models")
     logger.info("-" * 60)
 
+    fit_df, calib_df = split_calibration_window(train_df)
+    calibration_info = {
+        "method": CALIBRATION_METHOD,
+        "share_of_training_dates": CALIBRATION_SHARE,
+        "model_fit_rows": len(fit_df),
+        "model_fit_dates": [fit_df["date"].min(), fit_df["date"].max()],
+        "calibration_rows": len(calib_df),
+        "calibration_dates": [calib_df["date"].min(), calib_df["date"].max()],
+    }
+    logger.info(
+        f"Models fit on {len(fit_df)} training rows "
+        f"({fit_df['date'].min()} -> {fit_df['date'].max()}); "
+        f"{CALIBRATION_METHOD} calibrator fit on the newest "
+        f"{CALIBRATION_SHARE:.0%} of training dates: {len(calib_df)} rows "
+        f"({calib_df['date'].min()} -> {calib_df['date'].max()})"
+    )
+
     models = {}  # name -> {"estimator", "calibrated", "val_metrics", "lag"}
 
     # Logistic Regression
     logger.info("\nTraining Logistic Regression...")
     try:
-        lr_raw = train_logistic_regression(X_train, y_train)
-        lr_model, lr_calibrated = calibrate_model(lr_raw, X_val, y_val)
+        lr_model, lr_calibrated = fit_calibrated(train_logistic_regression, train_df)
         lr_val_pred = lr_model.predict(X_val)
         lr_val_metrics = compute_metrics(y_val, lr_val_pred)
         lr_val_metrics["auc"] = compute_auc(y_val, positive_scores(lr_model, X_val))
@@ -887,8 +996,7 @@ def train_model():
     # Random Forest
     logger.info("\nTraining Random Forest...")
     try:
-        rf_raw = train_random_forest(X_train, y_train)
-        rf_model, rf_calibrated = calibrate_model(rf_raw, X_val, y_val)
+        rf_model, rf_calibrated = fit_calibrated(train_random_forest, train_df)
         rf_val_pred = rf_model.predict(X_val)
         rf_val_metrics = compute_metrics(y_val, rf_val_pred)
         rf_val_metrics["auc"] = compute_auc(y_val, positive_scores(rf_model, X_val))
@@ -1038,6 +1146,7 @@ def train_model():
             "note": "AUC ~ 0.50 means no ranking signal (threshold tuning cannot help)",
         },
         "calibrated": best_calibrated,
+        "calibration": calibration_info,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 

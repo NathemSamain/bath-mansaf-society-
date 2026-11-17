@@ -315,7 +315,8 @@ The script will:
 - Apply label thresholding (drop the ±0.5% noise band)
 - Split data chronologically (no data leakage)
 - Evaluate three naive baselines (Always-UP, Persistence, Random)
-- Train Logistic Regression and Random Forest, then calibrate their probabilities
+- Train Logistic Regression and Random Forest on the older 80% of training
+  dates, then calibrate their probabilities on the newest 20%
 - Run the lag-mimic diagnostic on each model
 - Select best model by **validation MCC** (F1 as tie-breaker)
 - Evaluate best model on held-out test set
@@ -468,15 +469,17 @@ The dominant-class share is recorded in metadata under `class_collapse_diagnosti
 
 Downstream alerting needs trustworthy *probabilities*, not just labels. Raw
 classifier scores (especially Random Forest) are often poorly calibrated. We
-wrap the fitted model in `CalibratedClassifierCV` (Platt/sigmoid scaling) and
-fit the calibrator on the **validation set**, so `probability_up` /
-`confidence_score` better reflect real-world frequencies. The metadata records
-whether the saved model was calibrated. (The calibrated model still exposes
-`predict` / `predict_proba`, so prediction generation is unchanged.)
+wrap the fitted model in `CalibratedClassifierCV` (Platt/sigmoid scaling) so
+`probability_up` / `confidence_score` better reflect real-world frequencies.
 
-> Note: calibration is fit on the validation set and selection also uses
-> validation MCC, so validation figures are mildly optimistic — the **test**
-> numbers are the honest read.
+Calibration is time-aware: the training window is split by date (no
+shuffling). The model is trained on the older 80% of training dates and the
+calibrator is fit on the newest 20%, with the model frozen. Validation and test
+are never used for fitting, so model selection by validation MCC is
+out-of-sample for both the model and its calibrator. The metadata records
+whether the saved model was calibrated and on which rows/dates (`calibration`).
+(The calibrated model still exposes `predict` / `predict_proba`, so prediction
+generation is unchanged.)
 
 ### Why this matters
 

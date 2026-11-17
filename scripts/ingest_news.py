@@ -121,6 +121,7 @@ def existing_urls(supabase: Client, stock_id: str) -> set:
             supabase.table("news_articles")
             .select("url")
             .eq("stock_id", stock_id)
+            .order("id")  # unique order, so pages never repeat or skip rows
             .range(offset, offset + batch - 1)
             .execute()
         )
